@@ -1,17 +1,18 @@
-from fastapi import FastAPI, Depends
-from pydantic import BaseModel
+from contextlib import asynccontextmanager
 
-from app.database import get_db
+from fastapi import FastAPI, Depends
 from sqlalchemy.orm import Session
 
-app = FastAPI()
+from app.schemas import Telemetry
+from app.database import get_db, Base, engine
+from app.models import TelemetryReading
 
-class Telemetry(BaseModel):
-    source_id: str
-    timestamp: str
-    metric: str
-    value: float
-    unit: str
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    Base.metadata.create_all(engine)
+    yield
+
+app = FastAPI(lifespan=lifespan)
 
 @app.get("/")
 def root():
