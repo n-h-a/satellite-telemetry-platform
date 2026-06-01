@@ -1,38 +1,45 @@
 from typing import Optional
-from datetime import datetime, timezone
+from datetime import datetime
 
-from sqlalchemy import String, Boolean, Integer, Numeric, DateTime, ForeignKey
+from sqlalchemy import String, Boolean, Integer, Numeric, DateTime, ForeignKey, CheckConstraint, func, false, true
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database import Base
 
 class AlertRule(Base):
     __tablename__ = "alert_rules"
+    __table_args__ = (
+        CheckConstraint("operator IN ('<', '>', '<=', '>=', '==', '!=')", name="ck_alert_rules_operator"),
+        CheckConstraint("severity IN ('INFO', 'WARNING', 'CRITICAL')",    name="ck_alert_rules_severity"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    name: Mapped[str] = mapped_column(String(100))
+    name: Mapped[str] = mapped_column(String(100), unique=True)
     metric: Mapped[str] = mapped_column(String(100))
     operator: Mapped[str] = mapped_column(String(3))
     threshold_value: Mapped[float] = mapped_column(Numeric(precision=12, scale=4))
     duration_seconds: Mapped[Optional[int]] = mapped_column(Integer)
     severity: Mapped[str] = mapped_column(String(10))
     subsystem: Mapped[str] = mapped_column(String(100))
-    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default=true())
 
 class Alert(Base):
     __tablename__ = "alerts"
+    __table_args__ = (
+        CheckConstraint("severity IN ('INFO', 'WARNING', 'CRITICAL')", name="ck_alerts_severity"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    rule_id: Mapped[int] = mapped_column(Integer, ForeignKey("alert_rules.id"))
-    reading_id: Mapped[int] = mapped_column(Integer, ForeignKey("telemetry_readings.id"))
+    rule_id: Mapped[int] = mapped_column(Integer, ForeignKey("alert_rules.id", ondelete="RESTRICT"))
+    reading_id: Mapped[int] = mapped_column(Integer, ForeignKey("telemetry_readings.id", ondelete="RESTRICT"))
     source_id: Mapped[str] = mapped_column(String(100))
     metric: Mapped[str] = mapped_column(String(100))
     observed_value: Mapped[float] = mapped_column(Numeric(precision=12, scale=4))
-    message: Mapped[str] = mapped_column(String(300))
+    message: Mapped[str] = mapped_column(String(500))
     severity: Mapped[str] = mapped_column(String(10))
-    acknowledged: Mapped[bool] = mapped_column(Boolean, default=False)
-    triggered_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
-    resolved_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), default=None)
+    acknowledged: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
+    triggered_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    resolved_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
 
 class TelemetryReading(Base):
     __tablename__ = "telemetry_readings"
@@ -42,8 +49,8 @@ class TelemetryReading(Base):
     metric: Mapped[str] = mapped_column(String(100))
     value: Mapped[float] = mapped_column(Numeric(precision=12, scale=4))
     unit: Mapped[str] = mapped_column(String(50))
-    timestamp: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
-    received_at: Mapped[datetime]= mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    timestamp: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    received_at: Mapped[datetime]= mapped_column(DateTime(timezone=True), server_default=func.now())
 
     def __repr__(self) -> str:
         return f"<TelemetryReading id={self.id} source={self.source_id!r} metric={self.metric!r} value={self.value}>"
