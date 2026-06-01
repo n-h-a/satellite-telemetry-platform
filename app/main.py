@@ -1,21 +1,16 @@
 from typing import Optional
-from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Depends, Query, HTTPException
 from sqlalchemy import select, case
 from sqlalchemy.orm import Session
+from sqlalchemy.exc import IntegrityError
 
 from app.schemas import AlertRuleCreate, AlertRuleRead, AlertRuleUpdate, AlertRead, TelemetryCreate, TelemetryRead
-from app.database import get_db, Base, engine
+from app.database import get_db
 from app.models import AlertRule, Alert, TelemetryReading
 from app.services import check_for_alerts
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    Base.metadata.create_all(engine)
-    yield
-
-app = FastAPI(lifespan=lifespan)
+app = FastAPI()
 
 @app.get("/")
 def root():
@@ -25,11 +20,13 @@ def root():
 def process_readings(t: TelemetryCreate, db: Session = Depends(get_db)):
     reading = TelemetryReading(**t.model_dump())
     db.add(reading)
+    db.flush()
+
+    alerts = check_for_alerts(reading, db)
+    db.add_all(alerts)
+
     db.commit()
     db.refresh(reading)
-
-    check_for_alerts(reading, db)
-
     return reading
 
 @app.get("/telemetry/recent", response_model=list[TelemetryRead])
@@ -65,7 +62,13 @@ def get_alerts(db: Session = Depends(get_db), limit: int = Query(default=100, ge
 def create_alert_rule(r: AlertRuleCreate, db: Session = Depends(get_db)):
     rule = AlertRule(**r.model_dump())
     db.add(rule)
-    db.commit()
+    
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=f"Rule name {r.name} already exists")
+    
     db.refresh(rule)
     return rule
 
@@ -81,16 +84,10 @@ def update_alert_rule(id: int, r: AlertRuleUpdate, db: Session = Depends(get_db)
     if rule is None:
         raise HTTPException(status_code=404, detail=f"Alert rule {id} not found")
     
-    new_rule = r.model_dump(exclude_none=True)
+    new_rule = r.model_dump(exclude_unset=True)
     for key, value in new_rule.items():
         setattr(rule, key, value)
 
     db.commit()
     db.refresh(rule)
     return rule
-        
-
-    
-
-
-

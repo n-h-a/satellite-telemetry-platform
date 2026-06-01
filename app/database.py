@@ -6,7 +6,7 @@ from sqlalchemy.orm import DeclarativeBase, sessionmaker
 
 load_dotenv()
 
-DATABASE_URL = os.getenv("DATABASE_URL")
+DATABASE_URL: str = os.getenv("DATABASE_URL")  # type: ignore[assignment]
 
 if not DATABASE_URL:
     raise RuntimeError("DATABASE_URL environment variable is not set")
@@ -27,6 +27,9 @@ def get_db():
 
     try:
         yield db
+    except:
+        db.rollback()
+        raise
     finally:
         db.close()
 
