@@ -1,8 +1,38 @@
 from datetime import datetime
-from typing import Optional
+from typing import Optional, Literal
 
 from pydantic import BaseModel, ConfigDict
 
+
+class AlertRuleCreate(BaseModel):
+    name: str
+    metric: str
+    operator: Literal["<", ">", "<=", ">=", "==", "!="]
+    threshold_value: float
+    duration_seconds: Optional[int] = None
+    severity: Literal["INFO", "WARNING", "CRITICAL"]
+    subsystem: str
+    enabled: bool = True
+
+class AlertRuleRead(BaseModel):
+    id: int
+    name: str
+    metric: str
+    operator: Literal["<", ">", "<=", ">=", "==", "!="]
+    threshold_value: float
+    duration_seconds: Optional[int] = None
+    severity: Literal["INFO", "WARNING", "CRITICAL"]
+    subsystem: str
+    enabled: bool 
+
+    model_config = ConfigDict(from_attributes=True)
+
+class AlertRuleUpdate(BaseModel):
+    operator: Optional[Literal["<", ">", "<=", ">=", "==", "!="]] = None
+    threshold_value: Optional[float] = None
+    duration_seconds: Optional[int] = None
+    severity: Optional[Literal["INFO", "WARNING", "CRITICAL"]] = None
+    enabled: Optional[bool] = None
 
 class AlertRead(BaseModel):
     id: int
@@ -12,7 +42,7 @@ class AlertRead(BaseModel):
     metric: str
     observed_value: float
     message: str
-    severity: str
+    severity: Literal["INFO", "WARNING", "CRITICAL"]
     acknowledged: bool
     triggered_at: datetime
     resolved_at: Optional[datetime] = None
