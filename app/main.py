@@ -23,13 +23,7 @@ def root():
 
 @app.post("/telemetry", response_model=TelemetryRead)
 def process_readings(t: TelemetryCreate, db: Session = Depends(get_db)):
-    reading = TelemetryReading(
-        source_id=t.source_id, 
-        timestamp=t.timestamp,
-        metric=t.metric,
-        value=t.value,
-        unit=t.unit
-    )
+    reading = TelemetryReading(**t.model_dump())
     db.add(reading)
     db.commit()
     db.refresh(reading)
