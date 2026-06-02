@@ -54,6 +54,16 @@ def check_for_alerts(reading: TelemetryReading, db: Session) -> list[Alert]:
             continue
 
         if comp_func(reading.value, rule.threshold_value):
+            existing_alert = db.scalar(
+                select(Alert)
+                .where(Alert.rule_id==rule.id, 
+                       Alert.source_id==reading.source_id,
+                       Alert.resolved_at.is_(None)
+                )
+            )
+            if existing_alert is not None:
+                continue
+
             msg = f"{reading.metric} is {reading.value}, threshold: {rule.operator} {rule.threshold_value}"
             alerts.append(create_alert(rule.id, msg, rule.severity))
             logger.info(f"Alert fired: rule_id={rule.id} source={reading.source_id} metric={reading.metric} value={reading.value} severity={rule.severity}")

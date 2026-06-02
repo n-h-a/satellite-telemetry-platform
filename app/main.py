@@ -8,7 +8,7 @@ from fastapi import FastAPI, Request, HTTPException, Depends, Query
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy import select, delete, text
+from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
 
