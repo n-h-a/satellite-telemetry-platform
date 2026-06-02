@@ -23,7 +23,7 @@ class AlertRule(Base):
     __table_args__ = (
         CheckConstraint("operator IN ('<', '>', '<=', '>=', '==', '!=')", name="ck_alert_rules_operator"),
         CheckConstraint("severity IN ('INFO', 'WARNING', 'CRITICAL')",    name="ck_alert_rules_severity"),
-        Index("ix_metric", metric, postgresql_where=(enabled==True)), 
+        Index("ix_metric", metric, postgresql_where=enabled.is_(True)), 
     )
 
 class Alert(Base):
