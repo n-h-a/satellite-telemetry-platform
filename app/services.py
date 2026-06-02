@@ -56,6 +56,7 @@ def check_for_alerts(reading: TelemetryReading, db: Session) -> list[Alert]:
         if comp_func(reading.value, rule.threshold_value):
             msg = f"{reading.metric} is {reading.value}, threshold: {rule.operator} {rule.threshold_value}"
             alerts.append(create_alert(rule.id, msg, rule.severity))
+            logger.info(f"Alert fired: rule_id={rule.id} source={reading.source_id} metric={reading.metric} value={reading.value} severity={rule.severity}")
         
     return alerts
 
@@ -146,3 +147,4 @@ def resolve_alerts(reading: TelemetryReading, db: Session) -> None:
 
         if not comp_func(reading.value, rule.threshold_value):
             alert.resolved_at = datetime.now(timezone.utc)
+            logger.info(f"Alert resolved: alert_id={alert.id} source={alert.source_id} metric={alert.metric}")

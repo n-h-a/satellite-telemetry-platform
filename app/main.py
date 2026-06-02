@@ -1,7 +1,12 @@
 import os
+import json
+import logging
 from typing import Optional
+from datetime import datetime, timezone
 
-from fastapi import FastAPI, Depends, Query, HTTPException
+from fastapi import FastAPI, Request, HTTPException, Depends, Query
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import select, delete, text
 from sqlalchemy.orm import Session
@@ -28,8 +33,56 @@ from app.services import (
     get_paginated_alerts
 )
 
+class Formatter(logging.Formatter):
+    def format(self, record: logging.LogRecord) -> str:
+        formatted_record = {
+            "level": record.levelname,
+            "msg": record.getMessage(),
+            "logger": record.name,
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        }
+        if record.exc_info is not None:
+            formatted_record["exc"] = self.formatException(record.exc_info)
+        return json.dumps(formatted_record)
+
+
+def configure_logging() -> None:
+    handler = logging.StreamHandler()
+    handler.setFormatter(Formatter())
+
+    root = logging.getLogger()
+    root.setLevel(os.getenv("LOG_LEVEL", "INFO").upper())
+    root.handlers = [handler]
+
+    for name in ("uvicorn", "uvicorn.access", "uvicorn.error"):
+        uv = logging.getLogger(name)
+        uv.handlers = []
+        uv.propagate = True
+
 
 app = FastAPI()
+configure_logging()
+
+logger = logging.getLogger(__name__)
+
+@app.exception_handler(Exception)
+async def exception_handler(request: Request, exc: Exception):
+    logger.exception(exc)
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "Internal server error"}
+    )
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    errors = [{"field": error["loc"][-1], "message": error["msg"]} for error in exc.errors()]
+    return JSONResponse(
+        status_code=422,
+        content={
+            "detail": "Validation error",
+            "errors": errors
+        }
+    )
 
 _origins = os.getenv("ALLOWED_ORIGINS", "*")
 ALLOWED_ORIGINS = _origins.split(",") if _origins != "*" else ["*"]
