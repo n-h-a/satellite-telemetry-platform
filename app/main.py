@@ -4,6 +4,7 @@ import logging
 from typing import Optional
 from datetime import datetime, timezone
 
+from redis import Redis, RedisError
 from fastapi import FastAPI, Request, HTTPException, Depends, Query
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
@@ -24,7 +25,7 @@ from app.schemas import (
     TelemetryRead,
     TelemetryParams
 )
-from app.database import get_db
+from app.database import get_db, get_redis
 from app.models import AlertRule, Alert, TelemetryReading
 from app.services import (
     check_for_alerts,
@@ -95,6 +96,20 @@ app.add_middleware(
 )
 
 
+CACHE_TTL = 30
+
+def _telemetry_cache_key(params: TelemetryParams) -> str:
+    return (
+        f"telemetry:"
+        f"source_id={params.source_id}:"
+        f"metric={params.metric}:"
+        f"from_time={params.from_time}:"
+        f"to_time={params.to_time}:"
+        f"limit={params.limit}:"
+        f"offset={params.offset}"
+    )
+
+
 @app.get("/")
 def root(db: Session = Depends(get_db)):
     try:
@@ -121,8 +136,30 @@ def process_readings(t: TelemetryCreate, db: Session = Depends(get_db)):
 
 
 @app.get("/telemetry/recent", response_model=PaginatedResponse[TelemetryRead])
-def get_readings(db: Session = Depends(get_db), params: TelemetryParams = Depends()):
-    return get_paginated_telemetry(db, params)
+def get_readings(db: Session = Depends(get_db), params: TelemetryParams = Depends(), r: Redis = Depends(get_redis)):
+    key = _telemetry_cache_key(params)
+
+    try:
+        cached = r.get(key)
+        if cached is not None:
+            return PaginatedResponse[TelemetryRead].model_validate_json(cached)
+    except RedisError as e:
+        logger.warning(f"Redis get failed: {e}")
+
+    raw = get_paginated_telemetry(db, params)
+    result = PaginatedResponse[TelemetryRead](
+        items=[TelemetryRead.model_validate(item, from_attributes=True) for item in raw.items],
+        total=raw.total,
+        limit=raw.limit,
+        offset=raw.offset,
+    )
+
+    try:
+        r.set(key, result.model_dump_json(), ex=CACHE_TTL)
+    except RedisError as e:
+        logger.warning(f"Redis set failed: {e}")
+
+    return result
 
 
 @app.get("/sources", response_model=list[str])

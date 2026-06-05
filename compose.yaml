@@ -15,9 +15,12 @@ services:
       - 8000:8000
     environment:
       - DATABASE_URL=postgresql+psycopg://postgres:postgres@db:5432/telemetry_db
+      - REDIS_URL=redis://redis:6379
     depends_on:
       db:
         condition: service_healthy
+      redis:
+        condition: service_started
     develop:
       watch:
         - action: sync+restart
@@ -39,6 +42,20 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+  worker:
+    build:
+      context: .
+    environment:
+      - DATABASE_URL=postgresql+psycopg://postgres:postgres@db:5432/telemetry_db
+      - REDIS_URL=redis://redis:6379
+    depends_on:
+      db:
+        condition: service_healthy
+    command: python worker.py
+
+  redis:
+    image: redis:7-alpine
+
 
 volumes:
   db-data:

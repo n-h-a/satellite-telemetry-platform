@@ -1,3 +1,4 @@
+import fakeredis
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, event
@@ -5,7 +6,7 @@ from sqlalchemy.orm import sessionmaker, Session
 from sqlalchemy.pool import StaticPool
 
 from app.main import app as fastapi_app
-from app.database import Base, get_db
+from app.database import Base, get_db, get_redis
 import app.models
 
 DATABASE_URL = "sqlite:///:memory:"
@@ -40,8 +41,13 @@ def db():
         db.close()
 
 @pytest.fixture
-def client(db: Session):
+def redis_client():
+    return fakeredis.FakeRedis()
+
+@pytest.fixture
+def client(db: Session, redis_client):
     fastapi_app.dependency_overrides[get_db] = lambda: db
+    fastapi_app.dependency_overrides[get_redis] = lambda: redis_client
     client = TestClient(fastapi_app)
 
     try:

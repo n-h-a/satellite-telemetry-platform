@@ -1,7 +1,16 @@
+from unittest.mock import MagicMock
+
+import fakeredis
+import pytest
+from redis import RedisError
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app import models
+from app.database import get_db, get_redis
+from app.main import app as fastapi_app, _telemetry_cache_key, CACHE_TTL
+from app.schemas import PaginatedResponse, TelemetryParams, TelemetryRead
+from fastapi.testclient import TestClient
 
 
 def test_post_telemetry_returns_created_reading(client):
@@ -187,6 +196,50 @@ def test_delete_alert_rule_returns_409_when_alerts_reference_it(client, db: Sess
 
     resp = client.delete(f"/alert-rules/{rule.id}")
     assert resp.status_code == 409
+
+
+def test_cache_miss_queries_db_and_stores_result(client, db: Session, redis_client):
+    db.add(models.TelemetryReading(source_id="SAT-1", metric="battery_soc_percent", value=15.0, unit="%"))
+    db.flush()
+
+    resp = client.get("/telemetry/recent")
+
+    assert resp.status_code == 200
+    assert resp.json()["total"] == 1
+    assert len(redis_client.keys("telemetry:*")) == 1
+
+
+def test_cache_hit_returns_cached_data_without_hitting_db(client, db: Session, redis_client):
+    params = TelemetryParams()
+    key = _telemetry_cache_key(params)
+    fabricated = PaginatedResponse[TelemetryRead](items=[], total=999, limit=100, offset=0)
+    redis_client.set(key, fabricated.model_dump_json(), ex=CACHE_TTL)
+
+    resp = client.get("/telemetry/recent")
+
+    assert resp.status_code == 200
+    assert resp.json()["total"] == 999
+
+
+def test_cache_falls_back_to_db_when_redis_fails(db: Session):
+    broken = MagicMock()
+    broken.get.side_effect = RedisError("unavailable")
+    broken.set.side_effect = RedisError("unavailable")
+
+    fastapi_app.dependency_overrides[get_db] = lambda: db
+    fastapi_app.dependency_overrides[get_redis] = lambda: broken
+    c = TestClient(fastapi_app)
+
+    db.add(models.TelemetryReading(source_id="SAT-1", metric="battery_soc_percent", value=15.0, unit="%"))
+    db.flush()
+
+    try:
+        resp = c.get("/telemetry/recent")
+    finally:
+        fastapi_app.dependency_overrides.clear()
+
+    assert resp.status_code == 200
+    assert resp.json()["total"] == 1
 
 
 
