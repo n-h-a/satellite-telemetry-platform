@@ -20,8 +20,7 @@ def test_check_for_alerts_fires_on_breach(db: Session):
         value=15.0,
         unit="%",
     )
-    db.add(rule)
-    db.add(reading)
+    db.add_all([rule, reading])
     db.flush()
 
     alerts = services.check_for_alerts(reading, db)
@@ -46,8 +45,7 @@ def test_check_for_alerts_no_alert_when_condition_not_breached(db: Session):
         value=25.0,
         unit="%",
     )
-    db.add(rule)
-    db.add(reading)
+    db.add_all([rule, reading])
     db.flush()
 
     alerts = services.check_for_alerts(reading, db)
@@ -76,9 +74,7 @@ def test_check_for_alerts_suppresses_duplicate(db: Session):
         value=14.0,
         unit="%",
     )
-    db.add(rule)
-    db.add(reading1)
-    db.add(reading2)
+    db.add_all([rule, reading1, reading2])
     db.flush()
 
     alerts1 = services.check_for_alerts(reading1, db)
@@ -118,8 +114,7 @@ def test_check_for_alerts_new_alert_after_previous_resolved(db: Session):
         value=14.0,
         unit="%",
     )
-    db.add(rule)
-    db.add(reading1)
+    db.add_all([rule, reading1])
     db.flush()
 
     alerts1 = services.check_for_alerts(reading1, db)
@@ -155,8 +150,7 @@ def test_check_for_alerts_disabled_rule_ignored(db: Session):
         value=15.0,
         unit="%",
     )
-    db.add(rule)
-    db.add(reading)
+    db.add_all([rule, reading])
     db.flush()
 
     alerts = services.check_for_alerts(reading, db)
@@ -187,9 +181,7 @@ def test_check_for_alerts_multiple_rules_for_same_metric(db: Session):
         value=25.0,
         unit="%",
     )
-    db.add(rule1)
-    db.add(rule2)
-    db.add(reading)
+    db.add_all([rule1, rule2, reading])
     db.flush()
 
     alerts = services.check_for_alerts(reading, db)
@@ -219,8 +211,7 @@ def test_resolve_alerts_resolves_open_alert_when_condition_clears(db: Session):
         value=25.0,
         unit="%",
     )
-    db.add(rule)
-    db.add(reading1)
+    db.add_all([rule, reading1])
     db.flush()
 
     alerts = services.check_for_alerts(reading1, db)
@@ -259,8 +250,7 @@ def test_resolve_alerts_does_not_resolve_when_condition_still_holds(db: Session)
         value=15.0,
         unit="%",
     )
-    db.add(rule)
-    db.add(reading1)
+    db.add_all([rule, reading1])
     db.flush()
 
     alerts = services.check_for_alerts(reading1, db)
@@ -305,8 +295,7 @@ def test_resolve_alerts_does_not_touch_alerts_that_are_already_resolved(db: Sess
         value=30.0,
         unit="%",
     )
-    db.add(rule)
-    db.add(reading1)
+    db.add_all([rule, reading1])
     db.flush()
 
     alerts = services.check_for_alerts(reading1, db)
