@@ -12,8 +12,6 @@ REDIS_URL: str = os.getenv("REDIS_URL")         # type: ignore[assignment]
 
 if not DATABASE_URL:
     raise RuntimeError("DATABASE_URL environment variable is not set")
-if not REDIS_URL:
-    raise RuntimeError("REDIS_URL environment variable is not set")
 
 engine = create_engine(DATABASE_URL, pool_pre_ping=True)
 
@@ -23,7 +21,7 @@ SessionLocal = sessionmaker(
     autoflush=False
 )
 
-_redis_client = redis.Redis.from_url(REDIS_URL)
+_redis_client = None
 
 class Base(DeclarativeBase):
     pass
@@ -40,4 +38,12 @@ def get_db():
         db.close()
 
 def get_redis():
-    yield _redis_client
+    yield _get_redis_client()
+
+def _get_redis_client():
+    global _redis_client
+    if _redis_client is None:
+        if not REDIS_URL:
+            raise RuntimeError("REDIS_URL environment variable is not set")
+        _redis_client = redis.Redis.from_url(REDIS_URL)
+    return _redis_client
