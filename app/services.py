@@ -2,6 +2,7 @@
 import operator
 import logging
 from datetime import datetime, timezone
+from decimal import Decimal
 
 from sqlalchemy import select, case, func
 from sqlalchemy.orm import Session
@@ -26,6 +27,7 @@ OPERATORS = {
 }
 
 logger = logging.getLogger(__name__)
+
 
 def check_for_alerts(reading: TelemetryReading, db: Session) -> list[Alert]:
     def create_alert(r_id: int, msg: str, severity: str) -> Alert:
@@ -136,6 +138,73 @@ def get_paginated_alerts(db: Session, params: AlertParams) -> PaginatedResponse[
         limit = params.limit,
         offset = params.offset
     )
+
+
+def run_los_check(db: Session) -> None:
+    los_rules = db.scalars(
+        select(AlertRule)
+        .where(AlertRule.metric == "last_contact_age_min")
+        .where(AlertRule.enabled)
+    ).all()
+
+    if not los_rules:
+        return
+
+    source_ids = db.scalars(
+        select(TelemetryReading.source_id).distinct()
+    ).all()
+
+    now = datetime.now(timezone.utc)
+
+    for source_id in source_ids:
+        last_reading = db.scalar(
+            select(TelemetryReading)
+            .where(TelemetryReading.source_id == source_id)
+            .order_by(TelemetryReading.received_at.desc())
+            .limit(1)
+        )
+
+        if last_reading is None:
+            continue
+
+        received_at = last_reading.received_at
+        if received_at.tzinfo is None:
+            received_at = received_at.replace(tzinfo=timezone.utc)
+
+        age_min = (now - received_at).total_seconds() / 60
+
+        for rule in los_rules:
+            comp_func = OPERATORS.get(rule.operator)
+            if comp_func is None:
+                logger.warning(f"Rule {rule.id} has invalid operator {rule.operator}")
+                continue
+
+            existing_alert = db.scalar(
+                select(Alert)
+                .where(
+                    Alert.rule_id == rule.id,
+                    Alert.source_id == source_id,
+                    Alert.resolved_at.is_(None)
+                )
+            )
+
+            if comp_func(age_min, float(rule.threshold_value)):
+                if existing_alert is None:
+                    msg = f"last_contact_age_min is {age_min:.1f}, threshold: {rule.operator} {rule.threshold_value}"
+                    db.add(Alert(
+                        rule_id=rule.id,
+                        reading_id=last_reading.id,
+                        source_id=source_id,
+                        metric="last_contact_age_min",
+                        observed_value=Decimal(str(round(age_min, 4))),
+                        message=msg,
+                        severity=rule.severity,
+                    ))
+                    logger.info(f"LOS alert fired: rule_id={rule.id} source={source_id} age_min={age_min:.1f} severity={rule.severity}")
+            else:
+                if existing_alert is not None:
+                    existing_alert.resolved_at = now
+                    logger.info(f"LOS alert resolved: alert_id={existing_alert.id} source={source_id}")
 
 
 def resolve_alerts(reading: TelemetryReading, db: Session) -> None:

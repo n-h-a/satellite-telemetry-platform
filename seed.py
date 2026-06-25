@@ -1,4 +1,4 @@
-from sqlalchemy import select, func
+from sqlalchemy import select
 
 from app.database import SessionLocal
 from app.models import AlertRule
@@ -26,6 +26,9 @@ RULES = [
     # Command and Data Handling — OBC temperature
     {'name': 'OBC temperature warning',         'metric': 'obc_temp_c',             'operator': '>',  'threshold_value': 70.0,  'severity': 'WARNING',  'subsystem': 'Command and Data Handling', 'enabled': True},
     {'name': 'OBC temperature critical',        'metric': 'obc_temp_c',             'operator': '>',  'threshold_value': 85.0,  'severity': 'CRITICAL', 'subsystem': 'Command and Data Handling', 'enabled': True},
+    # Command and Data Handling — CPU (duration_seconds set but not yet evaluated; fires on any single reading above threshold)
+    {'name': 'High CPU warning',                'metric': 'obc_cpu_percent',        'operator': '>',  'threshold_value': 85.0,  'severity': 'WARNING',  'subsystem': 'Command and Data Handling', 'enabled': True,  'duration_seconds': 300},
+    {'name': 'High CPU critical',               'metric': 'obc_cpu_percent',        'operator': '>',  'threshold_value': 95.0,  'severity': 'CRITICAL', 'subsystem': 'Command and Data Handling', 'enabled': True,  'duration_seconds': 600},
     # Command and Data Handling — storage
     {'name': 'Storage warning',                 'metric': 'storage_used_percent',   'operator': '>',  'threshold_value': 85.0,  'severity': 'WARNING',  'subsystem': 'Command and Data Handling', 'enabled': True},
     {'name': 'Storage critical',                'metric': 'storage_used_percent',   'operator': '>',  'threshold_value': 95.0,  'severity': 'CRITICAL', 'subsystem': 'Command and Data Handling', 'enabled': True},
@@ -38,18 +41,23 @@ RULES = [
     # ADCS — attitude error
     {'name': 'Poor pointing warning',           'metric': 'attitude_error_deg',     'operator': '>',  'threshold_value': 5.0,   'severity': 'WARNING',  'subsystem': 'ADCS',                    'enabled': True},
     {'name': 'Poor pointing critical',          'metric': 'attitude_error_deg',     'operator': '>',  'threshold_value': 15.0,  'severity': 'CRITICAL', 'subsystem': 'ADCS',                    'enabled': True},
+    # Communications — loss of signal
+    {'name': 'Missed contact warning',          'metric': 'last_contact_age_min',   'operator': '>',  'threshold_value': 120.0, 'severity': 'WARNING',  'subsystem': 'Communications',          'enabled': True},
+    {'name': 'Missed contact critical',         'metric': 'last_contact_age_min',   'operator': '>',  'threshold_value': 240.0, 'severity': 'CRITICAL', 'subsystem': 'Communications',          'enabled': True},
 ]
 
 def seed():
     db = SessionLocal()
     try:
-        if (db.scalar(select(func.count()).select_from(AlertRule)) or 0) > 0:
-            print("Rules already seeded, skipping.")
+        existing_names = set(db.scalars(select(AlertRule.name)).all())
+        to_add = [AlertRule(**r) for r in RULES if r['name'] not in existing_names]
+        if not to_add:
+            print("All rules already seeded, skipping.")
             return
-        
-        db.add_all([AlertRule(**r) for r in RULES])
+
+        db.add_all(to_add)
         db.commit()
-        print(f"Seeded {len(RULES)} alert rules.")
+        print(f"Seeded {len(to_add)} alert rules.")
     finally:
         db.close()
 

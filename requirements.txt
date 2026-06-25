@@ -6,3 +6,4 @@ psycopg[binary]==3.3.4
 python-dotenv==1.2.2
 alembic==1.16.1
 redis==8.0.0
+apscheduler==3.10.4
