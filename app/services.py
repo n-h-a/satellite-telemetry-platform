@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 
 from sqlalchemy import select, case, func
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, aliased
 
 from app.models import Alert, AlertRule, TelemetryReading
 from app.schemas import (
@@ -150,20 +150,35 @@ def run_los_check(db: Session) -> None:
     if not los_rules:
         return
 
-    source_ids = db.scalars(
-        select(TelemetryReading.source_id).distinct()
-    ).all()
+    rn = func.row_number().over(
+        partition_by=TelemetryReading.source_id,
+        order_by=TelemetryReading.received_at.desc()
+    ).label("rn")
+
+    subq = select(TelemetryReading, rn).subquery()
+    aliased_reading = aliased(TelemetryReading, subq)
+
+    latest_readings = {
+        r.source_id: r
+        for r in db.scalars(select(aliased_reading).where(subq.c.rn == 1)).all()
+    }
+
+    source_ids = latest_readings.keys()
+
+    open_alerts_map = {
+        (a.source_id, a.rule_id): a
+        for a in db.scalars(
+            select(Alert).where(
+                Alert.rule_id.in_([r.id for r in los_rules]),
+                Alert.resolved_at.is_(None)
+            )
+        ).all()
+    }
 
     now = datetime.now(timezone.utc)
 
     for source_id in source_ids:
-        last_reading = db.scalar(
-            select(TelemetryReading)
-            .where(TelemetryReading.source_id == source_id)
-            .order_by(TelemetryReading.received_at.desc())
-            .limit(1)
-        )
-
+        last_reading = latest_readings.get(source_id)
         if last_reading is None:
             continue
 
@@ -179,14 +194,7 @@ def run_los_check(db: Session) -> None:
                 logger.warning(f"Rule {rule.id} has invalid operator {rule.operator}")
                 continue
 
-            existing_alert = db.scalar(
-                select(Alert)
-                .where(
-                    Alert.rule_id == rule.id,
-                    Alert.source_id == source_id,
-                    Alert.resolved_at.is_(None)
-                )
-            )
+            existing_alert = open_alerts_map.get((source_id, rule.id))
 
             if comp_func(age_min, float(rule.threshold_value)):
                 if existing_alert is None:
