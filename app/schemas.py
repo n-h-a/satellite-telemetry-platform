@@ -16,13 +16,13 @@ class PaginatedResponse(BaseModel, Generic[T]):
     model_config = ConfigDict(from_attributes=True)
 
 class AlertRuleCreate(BaseModel):
-    name: str
-    metric: str
+    name: str = Field(min_length=1)
+    metric: str = Field(min_length=1)
     operator: Literal["<", ">", "<=", ">=", "==", "!="]
     threshold_value: Decimal
     duration_seconds: Optional[int] = None
     severity: Literal["INFO", "WARNING", "CRITICAL"]
-    subsystem: str
+    subsystem: str = Field(min_length=1)
     enabled: bool = True
 
 class AlertRuleRead(BaseModel):
@@ -39,12 +39,13 @@ class AlertRuleRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 class AlertRuleUpdate(BaseModel):
-    metric: Optional[str] = None
+    name: Optional[str] = Field(min_length=1, default=None)
+    metric: Optional[str] = Field(min_length=1, default=None)
     operator: Optional[Literal["<", ">", "<=", ">=", "==", "!="]] = None
     threshold_value: Optional[Decimal] = None
     duration_seconds: Optional[int] = None
     severity: Optional[Literal["INFO", "WARNING", "CRITICAL"]] = None
-    subsystem: Optional[str] = None
+    subsystem: Optional[str] = Field(min_length=1, default=None)
     enabled: Optional[bool] = None
 
 class AlertRead(BaseModel):
@@ -73,10 +74,10 @@ class AlertParams(BaseModel):
     acknowledged: Optional[bool] = Field(default=None, description="Filter by acknowledgement status")
 
 class TelemetryCreate(BaseModel):
-    source_id: str
-    metric: str
+    source_id: str = Field(min_length=1)
+    metric: str = Field(min_length=1)
     value: Decimal
-    unit: str
+    unit: str = Field(min_length=1)
     timestamp: Optional[datetime] = None
 
 class TelemetryRead(BaseModel):

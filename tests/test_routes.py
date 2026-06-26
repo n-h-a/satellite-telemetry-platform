@@ -20,13 +20,25 @@ def test_post_telemetry_returns_created_reading(client):
         "value": 15.0,
         "unit": "%",
     }
-    response = client.post("/telemetry", json=payload)
+    resp = client.post("/telemetry", json=payload)
     
-    assert response.status_code == 200
-    assert response.json()["source_id"] == "SAT-1"
-    assert response.json()["metric"] == "battery_soc_percent"
-    assert response.json()["value"] == "15.0000"
-    assert response.json()["unit"] == "%"
+    assert resp.status_code == 201
+    assert resp.json()["source_id"] == "SAT-1"
+    assert resp.json()["metric"] == "battery_soc_percent"
+    assert resp.json()["value"] == "15.0000"
+    assert resp.json()["unit"] == "%"
+
+
+def test_post_telemetry_rejects_empty_string_fields(client):
+    payload = {
+        "source_id": "",
+        "metric": "",
+        "value": 15.0,
+        "unit": "",
+    }
+    resp = client.post("/telemetry", json=payload)
+    assert resp.status_code == 422
+
 
 def test_post_telemetry_fires_end_to_end_when_rule_breached(client, db: Session):
     rule = models.AlertRule(
@@ -47,7 +59,7 @@ def test_post_telemetry_fires_end_to_end_when_rule_breached(client, db: Session)
     db.add(rule)
     db.flush()
 
-    response = client.post("/telemetry", json=payload)
+    resp = client.post("/telemetry", json=payload)
 
     alert = db.scalar(select(models.Alert).where(models.Alert.severity == "CRITICAL"))
     assert alert is not None
@@ -177,6 +189,19 @@ def test_post_alert_rule_returns_409_on_duplicate_name(client):
     assert resp.status_code == 409
 
 
+def test_post_alert_rule_rejects_empty_string_fields(client):
+    payload = {
+        "name": "",
+        "metric": "",
+        "operator": "<",
+        "threshold_value": 20.0,
+        "severity": "CRITICAL",
+        "subsystem": "",
+    }
+    resp = client.post("/alert-rules", json=payload)
+    assert resp.status_code == 422
+
+
 def test_delete_alert_rule_returns_409_when_alerts_reference_it(client, db: Session):
     rule = models.AlertRule(
         name="Low battery critical",
@@ -248,6 +273,16 @@ def test_cache_falls_back_to_db_when_redis_fails(db: Session):
 
     assert resp.status_code == 200
     assert resp.json()["total"] == 1
+
+def test_allowed_origins_parsing_strips_whitespace():
+    from app.main import _parse_allowed_origins
+
+    assert _parse_allowed_origins("*") == ["*"]
+    assert _parse_allowed_origins("https://app.example.com") == ["https://app.example.com"]
+    assert _parse_allowed_origins("https://app.example.com, https://admin.example.com") == [
+        "https://app.example.com",
+        "https://admin.example.com",
+    ]
 
 
 

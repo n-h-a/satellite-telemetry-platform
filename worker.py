@@ -1,5 +1,6 @@
 import logging
 import os
+from datetime import datetime, timezone
 
 from apscheduler.schedulers.blocking import BlockingScheduler
 
@@ -29,6 +30,6 @@ if __name__ == "__main__":
         format="%(levelname)s %(name)s %(message)s",
     )
     scheduler = BlockingScheduler()
-    scheduler.add_job(job, "interval", seconds=LOS_CHECK_INTERVAL_SECONDS)
+    scheduler.add_job(job, "interval", seconds=LOS_CHECK_INTERVAL_SECONDS, next_run_time=datetime.now(timezone.utc))
     logger.info(f"Worker started, LOS check interval: {LOS_CHECK_INTERVAL_SECONDS}s")
     scheduler.start()

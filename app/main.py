@@ -92,8 +92,10 @@ async def pydantic_validation_exception_handler(request: Request, exc: PydanticV
         content={"detail": "Validation error", "errors": _format_validation_errors(exc.errors())}
     )
 
-_origins = os.getenv("ALLOWED_ORIGINS", "*")
-ALLOWED_ORIGINS = _origins.split(",") if _origins != "*" else ["*"]
+def _parse_allowed_origins(value: str) -> list[str]:
+    return [origin.strip() for origin in value.split(",")] if value != "*" else ["*"]
+
+ALLOWED_ORIGINS = _parse_allowed_origins(os.getenv("ALLOWED_ORIGINS", "*"))
 
 app.add_middleware(
     CORSMiddleware,
@@ -126,7 +128,7 @@ def root(db: Session = Depends(get_db)):
         raise HTTPException(status_code=503, detail="Database unavailable")
 
 
-@app.post("/telemetry", response_model=TelemetryRead)
+@app.post("/telemetry", response_model=TelemetryRead, status_code=201)
 def process_readings(t: TelemetryCreate, db: Session = Depends(get_db)):
     reading = TelemetryReading(**t.model_dump())
     db.add(reading)
