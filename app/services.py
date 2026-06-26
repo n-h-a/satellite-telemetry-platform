@@ -178,9 +178,7 @@ def run_los_check(db: Session) -> None:
     now = datetime.now(timezone.utc)
 
     for source_id in source_ids:
-        last_reading = latest_readings.get(source_id)
-        if last_reading is None:
-            continue
+        last_reading = latest_readings[source_id]
 
         received_at = last_reading.received_at
         if received_at.tzinfo is None:

@@ -26,7 +26,7 @@ from app.schemas import (
     TelemetryRead,
     TelemetryParams
 )
-from app.database import get_db, get_redis
+from app.database import get_db, get_redis, reset_redis_client
 from app.models import AlertRule, Alert, TelemetryReading
 from app.services import (
     check_for_alerts,
@@ -153,6 +153,7 @@ def get_readings(db: Session = Depends(get_db), params: TelemetryParams = Depend
         if cached is not None:
             return PaginatedResponse[TelemetryRead].model_validate_json(cached)
     except RedisError as e:
+        reset_redis_client()
         logger.warning(f"Redis get failed: {e}")
 
     raw = get_paginated_telemetry(db, params)
@@ -166,6 +167,7 @@ def get_readings(db: Session = Depends(get_db), params: TelemetryParams = Depend
     try:
         r.set(key, result.model_dump_json(), ex=CACHE_TTL)
     except RedisError as e:
+        reset_redis_client()
         logger.warning(f"Redis set failed: {e}")
 
     return result
@@ -237,7 +239,15 @@ def update_alert_rule(rule_id: int, r: AlertRuleUpdate, db: Session = Depends(ge
     for key, value in new_rule.items():
         setattr(rule, key, value)
 
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail=f"Rule name {r.name} already exists"
+        )
+    
     db.refresh(rule)
     return rule
 

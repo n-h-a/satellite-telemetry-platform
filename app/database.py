@@ -1,4 +1,5 @@
 import os
+import threading
 
 import redis
 from dotenv import load_dotenv
@@ -22,6 +23,7 @@ SessionLocal = sessionmaker(
 )
 
 _redis_client = None
+_redis_lock = threading.Lock()
 
 class Base(DeclarativeBase):
     pass
@@ -40,10 +42,16 @@ def get_db():
 def get_redis():
     yield _get_redis_client()
 
+def reset_redis_client():
+    global _redis_client
+    with _redis_lock:
+        _redis_client = None
+
 def _get_redis_client():
     global _redis_client
-    if _redis_client is None:
-        if not REDIS_URL:
-            raise RuntimeError("REDIS_URL environment variable is not set")
-        _redis_client = redis.Redis.from_url(REDIS_URL)
+    with _redis_lock:
+        if _redis_client is None:
+            if not REDIS_URL:
+                raise RuntimeError("REDIS_URL environment variable is not set")
+            _redis_client = redis.Redis.from_url(REDIS_URL)
     return _redis_client

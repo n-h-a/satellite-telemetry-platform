@@ -29,7 +29,7 @@ if __name__ == "__main__":
         level=os.getenv("LOG_LEVEL", "INFO").upper(),
         format="%(levelname)s %(name)s %(message)s",
     )
-    scheduler = BlockingScheduler()
+    scheduler = BlockingScheduler(timezone=timezone.utc)
     scheduler.add_job(job, "interval", seconds=LOS_CHECK_INTERVAL_SECONDS, next_run_time=datetime.now(timezone.utc))
     logger.info(f"Worker started, LOS check interval: {LOS_CHECK_INTERVAL_SECONDS}s")
     scheduler.start()

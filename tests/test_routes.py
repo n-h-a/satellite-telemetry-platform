@@ -202,6 +202,30 @@ def test_post_alert_rule_rejects_empty_string_fields(client):
     assert resp.status_code == 422
 
 
+def test_patch_alert_rules_returns_409_on_duplicate_name(client, db: Session):
+    rule1 = models.AlertRule(
+        name="Low battery critical",
+        metric="battery_soc_percent",
+        operator="<",
+        threshold_value=20.0,
+        severity="CRITICAL",
+        subsystem="Electrical Power System",
+    )
+    rule2 = models.AlertRule(
+        name="Low battery warning",
+        metric="battery_soc_percent",
+        operator="<",
+        threshold_value=30.0,
+        severity="WARNING",
+        subsystem="Electrical Power System",
+    )
+    db.add_all([rule1, rule2])
+    db.flush()
+
+    resp = client.patch(f"/alert-rules/{rule2.id}", json={"name": "Low battery critical"})
+    assert resp.status_code == 409
+
+
 def test_delete_alert_rule_returns_409_when_alerts_reference_it(client, db: Session):
     rule = models.AlertRule(
         name="Low battery critical",
