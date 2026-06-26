@@ -101,6 +101,6 @@ class TelemetryParams(BaseModel):
     @model_validator(mode="after")
     def validate_time_range(self) -> "TelemetryParams":
         if self.from_time is not None and self.to_time is not None:
-            if self.from_time >= self.to_time:
+            if self.from_time > self.to_time:
                 raise ValueError("from_time must be before to_time")
         return self

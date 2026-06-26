@@ -91,6 +91,14 @@ def test_get_telemetry_recent_respects_source_id_and_metric_filters(client, db: 
     assert resp.json()["items"][0]["metric"] == "battery_voltage_v"
 
 
+def test_get_telemetry_recent_returns_422_for_invalid_time_range(client):
+    resp = client.get("/telemetry/recent", params={"from_time": "2024-01-01T00:00:00Z", "to_time": "2024-01-01T00:00:00Z"})
+    assert resp.status_code == 200
+
+    resp = client.get("/telemetry/recent", params={"from_time": "2024-01-02T00:00:00Z", "to_time": "2024-01-01T00:00:00Z"})
+    assert resp.status_code == 422
+
+
 def test_get_alerts_respects_severity_and_acknowledged_filters(client, db: Session):
     rule_warning = models.AlertRule(
         name="Low battery warning",

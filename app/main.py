@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from redis import Redis, RedisError
 from fastapi import FastAPI, Request, HTTPException, Depends, Query
 from fastapi.exceptions import RequestValidationError
+from pydantic import ValidationError as PydanticValidationError
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import select, text
@@ -74,15 +75,21 @@ async def exception_handler(request: Request, exc: Exception):
         content={"detail": "Internal server error"}
     )
 
+def _format_validation_errors(errors: list) -> list[dict]:
+    return [{"field": error["loc"][-1] if error["loc"] else "body", "message": error["msg"]} for error in errors]
+
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
-    errors = [{"field": error["loc"][-1], "message": error["msg"]} for error in exc.errors()]
     return JSONResponse(
         status_code=422,
-        content={
-            "detail": "Validation error",
-            "errors": errors
-        }
+        content={"detail": "Validation error", "errors": _format_validation_errors(exc.errors())}
+    )
+
+@app.exception_handler(PydanticValidationError)
+async def pydantic_validation_exception_handler(request: Request, exc: PydanticValidationError):
+    return JSONResponse(
+        status_code=422,
+        content={"detail": "Validation error", "errors": _format_validation_errors(exc.errors())}
     )
 
 _origins = os.getenv("ALLOWED_ORIGINS", "*")
