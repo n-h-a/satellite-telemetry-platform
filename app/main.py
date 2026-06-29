@@ -82,7 +82,7 @@ def _format_validation_errors(errors: list) -> list[dict]:
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
     return JSONResponse(
         status_code=422,
-        content={"detail": "Validation error", "errors": _format_validation_errors(exc.errors())}
+        content={"detail": "Validation error", "errors": _format_validation_errors(list(exc.errors()))}
     )
 
 @app.exception_handler(PydanticValidationError)
@@ -211,7 +211,7 @@ def create_alert_rule(r: AlertRuleCreate, db: Session = Depends(get_db)):
         db.rollback()
         raise HTTPException(
             status_code=409,
-            detail=f"Rule name {r.name} already exists"
+            detail=f"A rule with that name already exists"
         )
     
     db.refresh(rule)
@@ -245,7 +245,7 @@ def update_alert_rule(rule_id: int, r: AlertRuleUpdate, db: Session = Depends(ge
         db.rollback()
         raise HTTPException(
             status_code=409,
-            detail=f"Rule name {r.name} already exists"
+            detail=f"A rule with that name already exists"
         )
     
     db.refresh(rule)
