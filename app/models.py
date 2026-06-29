@@ -2,7 +2,7 @@ from typing import Optional
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import String, Boolean, Integer, Numeric, DateTime, ForeignKey, CheckConstraint, Index, func, false, true
+from sqlalchemy import String, Boolean, Integer, Numeric, DateTime, ForeignKey, CheckConstraint, Index, false, true, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database import Base
@@ -38,7 +38,7 @@ class Alert(Base):
     message: Mapped[str] = mapped_column(String(500))
     severity: Mapped[str] = mapped_column(String(10))
     acknowledged: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
-    triggered_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    triggered_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=text("now()"))
     resolved_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
 
     __table_args__ = (
@@ -55,7 +55,7 @@ class TelemetryReading(Base):
     value: Mapped[Decimal] = mapped_column(Numeric(precision=12, scale=4))
     unit: Mapped[str] = mapped_column(String(50))
     timestamp: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
-    received_at: Mapped[datetime]= mapped_column(DateTime(timezone=True), server_default=func.now())
+    received_at: Mapped[datetime]= mapped_column(DateTime(timezone=True), server_default=text("now()"))
 
     __table_args__ = (Index("ix_timestamp_desc", timestamp.desc()), )
 

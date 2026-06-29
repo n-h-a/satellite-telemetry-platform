@@ -1,3 +1,5 @@
+from datetime import datetime, timezone
+
 import fakeredis
 import pytest
 from fastapi.testclient import TestClient
@@ -22,6 +24,8 @@ def set_sqlite_fk_pragma(dbapi_connection, _connection_record):
     cursor = dbapi_connection.cursor()
     cursor.execute("PRAGMA foreign_keys=ON")
     cursor.close()
+    dbapi_connection.create_function("now", 0, lambda: datetime.now(timezone.utc).isoformat())
+
 
 SessionLocal = sessionmaker(
     engine,

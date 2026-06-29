@@ -48,6 +48,17 @@ def check_for_alerts(reading: TelemetryReading, db: Session) -> list[Alert]:
         .where(AlertRule.enabled)
     )
 
+    open_alerts_map = {
+        a.rule_id: a
+        for a in db.scalars(
+            select(Alert).where(
+                Alert.source_id == reading.source_id,
+                Alert.metric == reading.metric,
+                Alert.resolved_at.is_(None)
+            )
+        ).all()
+    }
+
     alerts = []
     for rule in db.scalars(matching_rules).all():
         comp_func = OPERATORS.get(rule.operator)
@@ -56,13 +67,7 @@ def check_for_alerts(reading: TelemetryReading, db: Session) -> list[Alert]:
             continue
 
         if comp_func(reading.value, rule.threshold_value):
-            existing_alert = db.scalar(
-                select(Alert)
-                .where(Alert.rule_id==rule.id, 
-                       Alert.source_id==reading.source_id,
-                       Alert.resolved_at.is_(None)
-                )
-            )
+            existing_alert = open_alerts_map.get(rule.id)
             if existing_alert is not None:
                 continue
 

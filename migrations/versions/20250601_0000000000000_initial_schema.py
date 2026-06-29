@@ -40,7 +40,7 @@ def upgrade() -> None:
         sa.Column("value", sa.Numeric(precision=12, scale=4), nullable=False),
         sa.Column("unit", sa.String(50), nullable=False),
         sa.Column("timestamp", sa.DateTime(timezone=True)),
-        sa.Column("received_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False)
+        sa.Column("received_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False)
     )
     op.create_table(
         "alerts",
@@ -53,7 +53,7 @@ def upgrade() -> None:
         sa.Column("message", sa.String(500), nullable=False),
         sa.Column("severity", sa.String(10), nullable=False),
         sa.Column("acknowledged", sa.Boolean, default=False, server_default=sa.false(), nullable=False),
-        sa.Column("triggered_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
+        sa.Column("triggered_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
         sa.Column("resolved_at", sa.DateTime(timezone=True)),
         sa.CheckConstraint("severity IN ('INFO', 'WARNING', 'CRITICAL')", name="ck_alerts_severity")
     )
