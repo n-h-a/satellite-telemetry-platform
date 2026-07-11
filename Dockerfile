@@ -31,13 +31,12 @@ RUN adduser \
     appuser
 
 # Download dependencies as a separate step to take advantage of Docker's
-# layer caching. No pip cache mount: Railway's shared builder enforces a
-# proprietary ID-prefixing scheme on cache mounts that isn't part of the
-# standard Dockerfile spec, and getting it wrong just adds another failed
-# build round-trip for a pure build-speed optimization. Bind mount for
-# requirements.txt avoids copying it into this layer.
-RUN --mount=type=bind,source=requirements.txt,target=requirements.txt \
-    python -m pip install -r requirements.txt
+# layer caching. No --mount flags at all: Railway's shared builder rejects
+# both the cache and bind mount variants with proprietary requirements that
+# aren't part of the standard Dockerfile spec. Plain COPY + RUN is portable
+# to any build environment, at the cost of one extra layer for this file.
+COPY requirements.txt requirements.txt
+RUN python -m pip install -r requirements.txt
 
 # Switch to the non-privileged user to run the application.
 USER appuser
