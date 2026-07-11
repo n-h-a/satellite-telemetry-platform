@@ -1,9 +1,10 @@
+import os
 import random
 import time
 
 import requests
 
-BASE_URL = "http://localhost:8000"
+BASE_URL = os.getenv("SIMULATOR_BASE_URL", "http://localhost:8000")
 
 METRICS = {
     "battery_voltage_v":    ("V",   24.0,  32.0,  20.0,  34.0),

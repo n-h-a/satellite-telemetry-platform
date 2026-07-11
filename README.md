@@ -10,7 +10,7 @@ A mission-control-style backend simulating a ground station that receives state-
 - Simulates 5 satellites streaming state-of-health telemetry
 - Evaluates 28 configurable alert rules across EPS, Thermal, C&DH, Communications, and ADCS
 - Supports alert acknowledgement, duplicate suppression, auto-resolution, and loss-of-signal detection
-- Includes Redis caching, database indexes, migration support, and 42 pytest tests across routes/services/workers
+- Includes Redis caching, database indexes, migration support, and a pytest suite covering routes, services, and workers
 
 ---
 
@@ -26,7 +26,7 @@ This project is actively being developed as a backend/systems portfolio project.
 
 Current functionality includes telemetry ingestion, PostgreSQL persistence, Redis caching, configurable alert rules, alert lifecycle management, loss-of-signal detection, migrations, tests, and local Docker Compose setup.
 
-Not yet implemented: duration-based alert windows, queue-based ingestion, deployment, and frontend dashboard.
+Not yet implemented: duration-based alert windows, queue-based ingestion, and frontend dashboard.
 
 ---
 
@@ -369,7 +369,9 @@ docker compose up --build --watch
 
 The API will be available at `http://localhost:8000`.
 
-### 2. Apply database migrations
+### 2. Migrations run automatically
+
+The `server` container's entrypoint runs `alembic upgrade head` before starting the API, on every boot — a fresh stack is already migrated once it's up. It's idempotent, so it's also safe to run manually after adding a new migration without restarting the container:
 
 ```bash
 docker compose exec server alembic upgrade head
@@ -400,45 +402,35 @@ python simulate.py
 
 To see the full system working locally:
 
-1. Start the Docker Compose stack.
-2. Apply database migrations.
-3. Seed the alert rules.
-4. Run the simulator.
-5. Query `/telemetry/recent` to view incoming readings.
-6. Query `/alerts` to view generated WARNING and CRITICAL alerts.
-7. Acknowledge an alert with `PATCH /alerts/{id}`.
-8. Stop the simulator. Note: the seeded LOS threshold is 120 minutes, so a loss-of-signal alert will take 2+ hours to fire against real data. To test LOS locally, seed a short-duration rule (last_contact_age_min > 5) and wait one worker cycle.
+1. Start the Docker Compose stack (migrations apply automatically on boot).
+2. Seed the alert rules.
+3. Run the simulator.
+4. Query `/telemetry/recent` to view incoming readings.
+5. Query `/alerts` to view generated WARNING and CRITICAL alerts.
+6. Acknowledge an alert with `PATCH /alerts/{id}`.
+7. Stop the simulator. Note: the seeded LOS threshold is 120 minutes, so a loss-of-signal alert will take 2+ hours to fire against real data. To test LOS locally, seed a short-duration rule (last_contact_age_min > 5) and wait one worker cycle.
 
 ---
 
 ## Environment Variables
 
-The `server` and `worker` containers read their configuration from environment variables. Docker Compose sets `DATABASE_URL` and `REDIS_URL` directly in `compose.yaml`. For local development outside Docker, create a `.env` file:
-
-```
-# .env.example
-DATABASE_URL=postgresql+psycopg://postgres:postgres@localhost:5432/telemetry_db
-REDIS_URL=redis://localhost:6379
-
-# Optional — defaults shown
-LOG_LEVEL=INFO
-ALLOWED_ORIGINS=*
-LOS_CHECK_INTERVAL_SECONDS=60
-```
+The `server` and `worker` containers read their configuration from environment variables. Docker Compose sets `DATABASE_URL` and `REDIS_URL` directly in `compose.yaml`. For local development outside Docker, copy `.env.example` to `.env` and adjust as needed — note the host-mapped Postgres port is `5433`, not the container-internal `5432` (see `compose.yaml`).
 
 | Variable | Default | Description |
 |---|---|---|
-| `DATABASE_URL` | *(required)* | psycopg3 connection string |
-| `REDIS_URL` | *(required)* | Redis connection string |
+| `DATABASE_URL` | *(required)* | SQLAlchemy connection string. A bare `postgresql://` scheme (as managed providers like Railway hand back) is normalized to `postgresql+psycopg://` automatically. |
+| `REDIS_URL` | *(required by the server)* | Redis connection string. The worker never reads this. |
 | `LOG_LEVEL` | `INFO` | Logging verbosity (`DEBUG`, `INFO`, `WARNING`, `ERROR`) |
 | `ALLOWED_ORIGINS` | `*` | Comma-separated CORS origins, or `*` to allow all |
 | `LOS_CHECK_INTERVAL_SECONDS` | `60` | How often the worker polls for loss-of-signal |
+| `PORT` | `8000` | Port the server binds to inside the container. Only relevant on platforms (e.g. Railway) that inject it. |
+| `SIMULATOR_BASE_URL` | `http://localhost:8000` | Only read by `simulate.py`, to point it at a deployed instance instead of localhost. |
 
 ---
 
 ## Database Migrations
 
-Schema changes are managed with [Alembic](https://alembic.sqlalchemy.org/). Migration files live in `migrations/versions/`.
+Schema changes are managed with [Alembic](https://alembic.sqlalchemy.org/). Migration files live in `migrations/versions/`. Pending migrations are applied automatically every time the `server` container boots (see `docker-entrypoint.sh`); the manual command below is only needed to apply a newly added migration without restarting.
 
 ```bash
 # Apply all pending migrations
@@ -461,7 +453,7 @@ docker compose exec server alembic downgrade -1
 
 ## Testing
 
-The current test suite includes 27 pytest tests across route integration tests, alert service unit tests, Redis cache behavior, and LOS worker behavior. Tests run against an in-memory SQLite database and `fakeredis`, so Docker is not required.
+The test suite covers route integration tests, alert service unit tests, Redis cache behavior, LOS worker behavior, and configuration parsing. Tests run against an in-memory SQLite database and `fakeredis`, so Docker is not required.
 
 ```bash
 pip install -r requirements.txt -r requirements-dev.txt
@@ -506,6 +498,25 @@ The test fixtures (`conftest.py`) use FastAPI's `TestClient` with dependency ove
 
 **LOS simulation** — `simulate.py` sends readings on a 1–5 second loop, so no satellite ever goes silent. The LOS worker currently can't demonstrate against live simulated data. A per-satellite silence state with a configurable `LOS_THRESHOLD_MINUTES` would make the feature demonstrable end to end.
 
-**Deployment** — The stack is Docker-ready and targets deployment to Fly.io or Railway.
+**Frontend dashboard** — A separate-repo dashboard to visualize telemetry time series and surface active alerts in real time (not part of this repository).
+
+---
+
+## Deployment
+
+**Live demo:** _TODO — fill in after deploying_ (Swagger UI at `/docs` on that URL)
+
+Deployed on [Railway](https://railway.app) — managed Postgres and Redis via plugins, two services from this repo (API and worker) sharing one Docker image via `docker-entrypoint.sh`.
+
+1. Create a Railway project and connect this repo.
+2. Add the **Postgres** and **Redis** plugins.
+3. Add two services from the repo:
+   - **server** — default start command (image `CMD` is `["server"]`). Set `DATABASE_URL` and `REDIS_URL` to reference the plugins' connection strings. Set the Health Check Path to `/` — it already pings the database and returns `503` if unavailable.
+   - **worker** — override the start command to `worker`. Only needs `DATABASE_URL` referenced; it never touches Redis.
+4. Deploy both services. Migrations run automatically on every `server` boot (see `docker-entrypoint.sh`).
+5. Seed the alert rules once (idempotent, safe to re-run). Run it *inside* the deployed server service, since the plugin's `DATABASE_URL` points at Railway's private network and isn't reachable from a local shell: `railway ssh` (linked to the server service), then `python seed.py`. Alternative if ssh isn't available: run `python seed.py` locally with `DATABASE_URL` set to the Postgres plugin's *public* connection URL from the Railway dashboard.
+6. Verify: `GET /`, `GET /docs`, `POST /telemetry`, and the worker's logs for `"Worker started, LOS check interval: 60s"`.
+
+A bare `postgresql://` URL from Railway's Postgres plugin is normalized to the psycopg3 driver automatically in `app/database.py` — no manual URL rewriting needed.
 
 **Frontend dashboard** — A separate-repo dashboard to visualize telemetry time series and surface active alerts in real time (not part of this repository).

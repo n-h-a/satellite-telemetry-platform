@@ -44,9 +44,17 @@ USER appuser
 # Copy the source code into the container.
 COPY . .
 
+# Re-copy and chmod the entrypoint after the bulk copy above, so its
+# executable bit isn't clobbered by that copy's default permissions. COPY
+# always executes with root privileges regardless of the active USER, so
+# this works even though appuser is active.
+COPY --chmod=755 docker-entrypoint.sh ./docker-entrypoint.sh
+
 # Expose the port that the application listens on.
 EXPOSE 8000
 
-# Run the application. Exec form so uvicorn receives SIGTERM directly and
-# containers stop promptly instead of waiting out the stop timeout.
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Entrypoint dispatches on "server" (runs migrations, then uvicorn on $PORT,
+# defaulting to 8000 for local docker compose) or "worker" (runs worker.py).
+# Exec form throughout so the process receives SIGTERM directly.
+ENTRYPOINT ["./docker-entrypoint.sh"]
+CMD ["server"]

@@ -8,11 +8,25 @@ from sqlalchemy.orm import DeclarativeBase, sessionmaker
 
 load_dotenv()
 
+def _normalize_database_url(url: str) -> str:
+    # Managed Postgres providers commonly hand back a bare postgresql:// URL
+    # (which SQLAlchemy resolves to psycopg2 — not installed) or the legacy
+    # postgres:// scheme (which SQLAlchemy 2.0 rejects outright). Select the
+    # psycopg3 driver explicitly in both cases.
+    if url.startswith("postgresql://"):
+        return url.replace("postgresql://", "postgresql+psycopg://", 1)
+    if url.startswith("postgres://"):
+        return url.replace("postgres://", "postgresql+psycopg://", 1)
+    return url
+
+
 DATABASE_URL: str = os.getenv("DATABASE_URL")  # type: ignore[assignment]
 REDIS_URL: str = os.getenv("REDIS_URL")         # type: ignore[assignment]
 
 if not DATABASE_URL:
     raise RuntimeError("DATABASE_URL environment variable is not set")
+
+DATABASE_URL = _normalize_database_url(DATABASE_URL)
 
 engine = create_engine(DATABASE_URL, pool_pre_ping=True)
 

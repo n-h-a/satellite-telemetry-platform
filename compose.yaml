@@ -49,11 +49,10 @@ services:
       context: .
     environment:
       - DATABASE_URL=postgresql+psycopg://postgres:postgres@db:5432/telemetry_db
-      - REDIS_URL=redis://redis:6379
     depends_on:
       db:
         condition: service_healthy
-    command: python worker.py
+    command: worker
 
   redis:
     image: redis:7-alpine
