@@ -1,10 +1,11 @@
 import os
+import secrets
 import logging
 from contextlib import asynccontextmanager
 from typing import Optional
 
 from redis import Redis, RedisError
-from fastapi import FastAPI, Request, HTTPException, Depends, Query
+from fastapi import FastAPI, Request, HTTPException, Depends, Header, Query
 from fastapi.exceptions import RequestValidationError
 from pydantic import ValidationError as PydanticValidationError
 from fastapi.responses import JSONResponse
@@ -92,6 +93,18 @@ app.add_middleware(
 )
 
 
+# When API_KEY is set, mutating endpoints require a matching X-API-Key header;
+# read endpoints stay open. When unset (local dev, tests), auth is disabled —
+# the deployed instance must set it, since the API is reachable publicly.
+API_KEY = os.getenv("API_KEY") or None
+
+def require_api_key(x_api_key: Optional[str] = Header(default=None)):
+    if API_KEY is None:
+        return
+    if x_api_key is None or not secrets.compare_digest(x_api_key, API_KEY):
+        raise HTTPException(status_code=401, detail="Invalid or missing API key")
+
+
 CACHE_TTL = 30
 
 def _telemetry_cache_key(params: TelemetryParams) -> str:
@@ -115,7 +128,7 @@ def root(db: Session = Depends(get_db)):
         raise HTTPException(status_code=503, detail="Database unavailable")
 
 
-@app.post("/telemetry", response_model=TelemetryRead, status_code=201)
+@app.post("/telemetry", response_model=TelemetryRead, status_code=201, dependencies=[Depends(require_api_key)])
 def process_readings(t: TelemetryCreate, db: Session = Depends(get_db)):
     if t.metric == LOS_METRIC:
         raise HTTPException(
@@ -193,7 +206,7 @@ def get_alerts(db: Session = Depends(get_db), params: AlertParams = Depends()):
     return get_paginated_alerts(db, params)
 
 
-@app.patch("/alerts/{a_id}", response_model=AlertRead)
+@app.patch("/alerts/{a_id}", response_model=AlertRead, dependencies=[Depends(require_api_key)])
 def acknowledge_alert(a_id: int, a: AlertUpdate, db: Session = Depends(get_db)):
     alert = db.scalar(select(Alert).where(Alert.id == a_id))
     if alert is None:
@@ -209,7 +222,7 @@ def acknowledge_alert(a_id: int, a: AlertUpdate, db: Session = Depends(get_db)):
     return alert
     
 
-@app.post("/alert-rules", response_model=AlertRuleRead, status_code=201)
+@app.post("/alert-rules", response_model=AlertRuleRead, status_code=201, dependencies=[Depends(require_api_key)])
 def create_alert_rule(r: AlertRuleCreate, db: Session = Depends(get_db)):
     rule = AlertRule(**r.model_dump())
     db.add(rule)
@@ -235,7 +248,7 @@ def get_alert_rules(db: Session = Depends(get_db), enabled: Optional[bool] = Que
     return db.scalars(stmt).all()
 
 
-@app.patch("/alert-rules/{rule_id}", response_model=AlertRuleRead)
+@app.patch("/alert-rules/{rule_id}", response_model=AlertRuleRead, dependencies=[Depends(require_api_key)])
 def update_alert_rule(rule_id: int, r: AlertRuleUpdate, db: Session = Depends(get_db)):
     rule = db.scalar(select(AlertRule).where(AlertRule.id == rule_id))
     if rule is None:
@@ -248,18 +261,22 @@ def update_alert_rule(rule_id: int, r: AlertRuleUpdate, db: Session = Depends(ge
 
     # Open alerts were raised under the rule's previous meaning, so changing
     # what the rule evaluates resolves them rather than leaving them stranded.
+    # Disabling does the same: nothing evaluates a disabled rule (the LOS
+    # worker skips it entirely), so its open alerts would never auto-resolve.
     semantics_changed = any(
         field in new_rule and getattr(rule, field) != new_rule[field]
         for field in ("metric", "operator", "threshold_value")
     )
+    newly_disabled = new_rule.get("enabled") is False and rule.enabled
 
     for key, value in new_rule.items():
         setattr(rule, key, value)
 
-    if semantics_changed:
+    if semantics_changed or newly_disabled:
         resolved_count = resolve_open_alerts_for_rule(rule.id, db)
         if resolved_count:
-            logger.info(f"Rule {rule.id} semantics changed; resolved {resolved_count} open alert(s)")
+            reason = "disabled" if newly_disabled else "semantics changed"
+            logger.info(f"Rule {rule.id} {reason}; resolved {resolved_count} open alert(s)")
 
     try:
         db.commit()
@@ -274,7 +291,7 @@ def update_alert_rule(rule_id: int, r: AlertRuleUpdate, db: Session = Depends(ge
     return rule
 
 
-@app.delete("/alert-rules/{rule_id}", status_code=204)
+@app.delete("/alert-rules/{rule_id}", status_code=204, dependencies=[Depends(require_api_key)])
 def delete_alert_rule(rule_id: int, db: Session = Depends(get_db)):
     rule = db.scalar(select(AlertRule).where(AlertRule.id == rule_id))
     if rule is None:

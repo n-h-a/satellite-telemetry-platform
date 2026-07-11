@@ -6,6 +6,10 @@ import requests
 
 BASE_URL = os.getenv("SIMULATOR_BASE_URL", "http://localhost:8000")
 
+# Matches the server's API_KEY when the target instance has auth enabled.
+API_KEY = os.getenv("API_KEY")
+HEADERS = {"X-API-Key": API_KEY} if API_KEY else {}
+
 METRICS = {
     "battery_voltage_v":    ("V",   24.0,  32.0,  20.0,  34.0),
     "battery_soc_percent":  ("%",   40.0, 100.0,  15.0, 105.0),
@@ -43,7 +47,7 @@ def send_reading(source_id: str, metric: str) -> None:
     }
 
     try:
-        r = requests.post(f"{BASE_URL}/telemetry", json=payload, timeout=5)
+        r = requests.post(f"{BASE_URL}/telemetry", json=payload, headers=HEADERS, timeout=5)
         r.raise_for_status()
         print(f"{source_id} {metric:<25} {payload['value']:>10} {unit}")
     except requests.RequestException as e:

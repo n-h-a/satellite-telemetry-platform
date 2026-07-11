@@ -23,13 +23,13 @@ class PaginatedResponse(BaseModel, Generic[T]):
     model_config = ConfigDict(from_attributes=True)
 
 class AlertRuleCreate(BaseModel):
-    name: str = Field(min_length=1)
-    metric: str = Field(min_length=1)
+    name: str = Field(min_length=1, max_length=100)
+    metric: str = Field(min_length=1, max_length=100)
     operator: Literal["<", ">", "<=", ">=", "==", "!="]
-    threshold_value: Decimal
+    threshold_value: Decimal = Field(max_digits=12, decimal_places=4)
     duration_seconds: Optional[int] = Field(default=None, description="Duration stored but not evaluated")
     severity: Literal["INFO", "WARNING", "CRITICAL"]
-    subsystem: str = Field(min_length=1)
+    subsystem: str = Field(min_length=1, max_length=100)
     enabled: bool = True
 
 class AlertRuleRead(BaseModel):
@@ -46,13 +46,13 @@ class AlertRuleRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 class AlertRuleUpdate(BaseModel):
-    name: Optional[str] = Field(min_length=1, default=None)
-    metric: Optional[str] = Field(min_length=1, default=None)
+    name: Optional[str] = Field(min_length=1, max_length=100, default=None)
+    metric: Optional[str] = Field(min_length=1, max_length=100, default=None)
     operator: Optional[Literal["<", ">", "<=", ">=", "==", "!="]] = None
-    threshold_value: Optional[Decimal] = None
+    threshold_value: Optional[Decimal] = Field(max_digits=12, decimal_places=4, default=None)
     duration_seconds: Optional[int] = Field(default=None, description="Duration stored but not evaluated")
     severity: Optional[Literal["INFO", "WARNING", "CRITICAL"]] = None
-    subsystem: Optional[str] = Field(min_length=1, default=None)
+    subsystem: Optional[str] = Field(min_length=1, max_length=100, default=None)
     enabled: Optional[bool] = None
 
 class AlertRead(BaseModel):
@@ -81,10 +81,12 @@ class AlertParams(BaseModel):
     acknowledged: Optional[bool] = Field(default=None, description="Filter by acknowledgement status")
 
 class TelemetryCreate(BaseModel):
-    source_id: str = Field(min_length=1)
-    metric: str = Field(min_length=1)
-    value: Decimal
-    unit: str = Field(min_length=1)
+    # Bounds mirror the column definitions in models.py, so oversized input
+    # fails validation (422) instead of erroring in the database (500).
+    source_id: str = Field(min_length=1, max_length=100)
+    metric: str = Field(min_length=1, max_length=100)
+    value: Decimal = Field(max_digits=12, decimal_places=4)
+    unit: str = Field(min_length=1, max_length=50)
     timestamp: Optional[UTCDatetime] = None
 
 class TelemetryRead(BaseModel):

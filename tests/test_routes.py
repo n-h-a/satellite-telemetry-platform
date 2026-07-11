@@ -500,4 +500,99 @@ def test_patch_alert_rule_cosmetic_change_keeps_open_alerts(client, db: Session)
     assert alert.resolved_at is None
 
 
+def test_patch_alert_rule_disable_resolves_open_alerts(client, db: Session):
+    rule, alert = _rule_with_open_alert(db)
+
+    # Nothing evaluates a disabled rule, so leaving its alerts open would
+    # strand them forever.
+    resp = client.patch(f"/alert-rules/{rule.id}", json={"enabled": False})
+    assert resp.status_code == 200
+
+    db.refresh(alert)
+    assert alert.resolved_at is not None
+
+
+def test_patch_alert_rule_resending_enabled_true_keeps_open_alerts(client, db: Session):
+    rule, alert = _rule_with_open_alert(db)
+
+    resp = client.patch(f"/alert-rules/{rule.id}", json={"enabled": True})
+    assert resp.status_code == 200
+
+    db.refresh(alert)
+    assert alert.resolved_at is None
+
+
+def test_get_sources_returns_distinct_source_ids(client, db: Session):
+    db.add_all([
+        models.TelemetryReading(source_id="SAT-1", metric="battery_soc_percent", value=15.0, unit="%"),
+        models.TelemetryReading(source_id="SAT-1", metric="battery_voltage_v",   value=24.0, unit="V"),
+        models.TelemetryReading(source_id="SAT-2", metric="battery_soc_percent", value=16.0, unit="%"),
+    ])
+    db.flush()
+
+    resp = client.get("/sources")
+    assert resp.status_code == 200
+    assert sorted(resp.json()) == ["SAT-1", "SAT-2"]
+
+
+def test_post_telemetry_rejects_fields_exceeding_column_limits(client):
+    base = {"source_id": "SAT-1", "metric": "battery_soc_percent", "value": 15.0, "unit": "%"}
+
+    resp = client.post("/telemetry", json={**base, "source_id": "S" * 101})
+    assert resp.status_code == 422
+
+    resp = client.post("/telemetry", json={**base, "unit": "u" * 51})
+    assert resp.status_code == 422
+
+    # Numeric(12, 4) holds at most 8 integer digits.
+    resp = client.post("/telemetry", json={**base, "value": 123456789.0})
+    assert resp.status_code == 422
+
+
+def test_post_alert_rule_rejects_fields_exceeding_column_limits(client):
+    payload = {
+        "name": "N" * 101,
+        "metric": "battery_soc_percent",
+        "operator": "<",
+        "threshold_value": 20.0,
+        "severity": "CRITICAL",
+        "subsystem": "Electrical Power System",
+    }
+    resp = client.post("/alert-rules", json=payload)
+    assert resp.status_code == 422
+
+
+def test_mutating_endpoints_require_api_key_when_configured(client, monkeypatch):
+    monkeypatch.setattr("app.main.API_KEY", "topsecret")
+    telemetry = {"source_id": "SAT-1", "metric": "battery_soc_percent", "value": 15.0, "unit": "%"}
+    rule = {
+        "name": "Low battery critical",
+        "metric": "battery_soc_percent",
+        "operator": "<",
+        "threshold_value": 20.0,
+        "severity": "CRITICAL",
+        "subsystem": "Electrical Power System",
+    }
+
+    assert client.post("/telemetry", json=telemetry).status_code == 401
+    assert client.post("/telemetry", json=telemetry, headers={"X-API-Key": "wrong"}).status_code == 401
+    assert client.post("/alert-rules", json=rule).status_code == 401
+    assert client.patch("/alert-rules/1", json={"enabled": False}).status_code == 401
+    assert client.delete("/alert-rules/1").status_code == 401
+    assert client.patch("/alerts/1", json={"acknowledged": True}).status_code == 401
+
+
+def test_correct_api_key_allows_writes_and_reads_stay_open(client, monkeypatch):
+    monkeypatch.setattr("app.main.API_KEY", "topsecret")
+    telemetry = {"source_id": "SAT-1", "metric": "battery_soc_percent", "value": 15.0, "unit": "%"}
+
+    resp = client.post("/telemetry", json=telemetry, headers={"X-API-Key": "topsecret"})
+    assert resp.status_code == 201
+
+    assert client.get("/telemetry/recent").status_code == 200
+    assert client.get("/alerts").status_code == 200
+    assert client.get("/alert-rules").status_code == 200
+    assert client.get("/sources").status_code == 200
+
+
 

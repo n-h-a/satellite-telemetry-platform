@@ -14,6 +14,27 @@ A mission-control-style backend simulating a ground station that receives state-
 
 ---
 
+## Try It Live
+
+A live instance runs at **https://satellite-telemetry-platform-production.up.railway.app**, with five simulated satellites streaming telemetry into it. Read endpoints are open — no key, no signup:
+
+```bash
+BASE=https://satellite-telemetry-platform-production.up.railway.app
+
+# Latest readings from SAT-1
+curl "$BASE/telemetry/recent?source_id=SAT-1&limit=5"
+
+# Open CRITICAL alerts across the fleet
+curl "$BASE/alerts?severity=CRITICAL&acknowledged=false"
+
+# The 28 configured alert rules
+curl "$BASE/alert-rules"
+```
+
+Or browse the interactive Swagger UI at [`/docs`](https://satellite-telemetry-platform-production.up.railway.app/docs). Write endpoints (telemetry ingestion, rule and alert changes) require an `X-API-Key` header on the live instance — see [Environment Variables](#environment-variables).
+
+---
+
 ## Why I Built This
 
 I built this project to demonstrate backend engineering relevant to space software. It simulates satellite state-of-health telemetry, evaluates configurable alert rules across spacecraft subsystems, detects loss of signal, and supports operational alert workflows such as acknowledgement, resolution, and duplicate suppression.
@@ -221,6 +242,8 @@ Query parameters for `GET /alerts`:
 
 ## API Examples
 
+Examples below target a local instance. When `API_KEY` is set (as on the live deployment), add `-H "X-API-Key: $API_KEY"` to the `POST`/`PATCH`/`DELETE` calls; `GET` endpoints never require it.
+
 ```bash
 # Health check
 curl http://localhost:8000/
@@ -420,6 +443,7 @@ The `server` and `worker` containers read their configuration from environment v
 |---|---|---|
 | `DATABASE_URL` | *(required)* | SQLAlchemy connection string. A bare `postgresql://` scheme (as managed providers like Railway hand back) is normalized to `postgresql+psycopg://` automatically. |
 | `REDIS_URL` | *(required by the server)* | Redis connection string. The worker never reads this. |
+| `API_KEY` | *(unset — auth disabled)* | When set, mutating endpoints (`POST /telemetry`, alert and alert-rule writes) require a matching `X-API-Key` header; `GET` endpoints stay open. Set this on any publicly reachable deployment. Also read by `simulate.py`. |
 | `LOG_LEVEL` | `INFO` | Logging verbosity (`DEBUG`, `INFO`, `WARNING`, `ERROR`) |
 | `ALLOWED_ORIGINS` | `*` | Comma-separated CORS origins, or `*` to allow all |
 | `LOS_CHECK_INTERVAL_SECONDS` | `60` | How often the worker polls for loss-of-signal |
