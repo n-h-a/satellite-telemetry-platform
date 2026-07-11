@@ -30,12 +30,13 @@ RUN adduser \
     --uid "${UID}" \
     appuser
 
-# Download dependencies as a separate step to take advantage of Docker's caching.
-# Leverage a cache mount to /root/.cache/pip to speed up subsequent builds.
-# Leverage a bind mount to requirements.txt to avoid having to copy them into
-# into this layer.
-RUN --mount=type=cache,target=/root/.cache/pip,id=pip-cache \
-    --mount=type=bind,source=requirements.txt,target=requirements.txt \
+# Download dependencies as a separate step to take advantage of Docker's
+# layer caching. No pip cache mount: Railway's shared builder enforces a
+# proprietary ID-prefixing scheme on cache mounts that isn't part of the
+# standard Dockerfile spec, and getting it wrong just adds another failed
+# build round-trip for a pure build-speed optimization. Bind mount for
+# requirements.txt avoids copying it into this layer.
+RUN --mount=type=bind,source=requirements.txt,target=requirements.txt \
     python -m pip install -r requirements.txt
 
 # Switch to the non-privileged user to run the application.
