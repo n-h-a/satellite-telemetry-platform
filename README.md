@@ -504,7 +504,7 @@ The test fixtures (`conftest.py`) use FastAPI's `TestClient` with dependency ove
 
 ## Deployment
 
-**Live demo:** _TODO — fill in after deploying_ (Swagger UI at `/docs` on that URL)
+**Live demo:** https://satellite-telemetry-platform-production.up.railway.app ([`/docs`](https://satellite-telemetry-platform-production.up.railway.app/docs) for Swagger UI)
 
 Deployed on [Railway](https://railway.app) — managed Postgres and Redis via plugins, two services from this repo (API and worker) sharing one Docker image via `docker-entrypoint.sh`.
 
@@ -512,7 +512,7 @@ Deployed on [Railway](https://railway.app) — managed Postgres and Redis via pl
 2. Add the **Postgres** and **Redis** plugins.
 3. Add two services from the repo:
    - **server** — default start command (image `CMD` is `["server"]`). Set `DATABASE_URL` and `REDIS_URL` to reference the plugins' connection strings. Set the Health Check Path to `/` — it already pings the database and returns `503` if unavailable.
-   - **worker** — override the start command to `worker`. Only needs `DATABASE_URL` referenced; it never touches Redis.
+   - **worker** — override the start command to `./docker-entrypoint.sh worker`. (Railway's custom start command replaces the image's ENTRYPOINT — unlike compose's `command:` — so the bare `worker` dispatch shorthand doesn't work here; the entrypoint must be invoked explicitly.) Only needs `DATABASE_URL` referenced; it never touches Redis.
 4. Deploy both services. Migrations run automatically on every `server` boot (see `docker-entrypoint.sh`).
 5. Seed the alert rules once (idempotent, safe to re-run). Run it *inside* the deployed server service, since the plugin's `DATABASE_URL` points at Railway's private network and isn't reachable from a local shell: `railway ssh` (linked to the server service), then `python seed.py`. Alternative if ssh isn't available: run `python seed.py` locally with `DATABASE_URL` set to the Postgres plugin's *public* connection URL from the Railway dashboard.
 6. Verify: `GET /`, `GET /docs`, `POST /telemetry`, and the worker's logs for `"Worker started, LOS check interval: 60s"`.
