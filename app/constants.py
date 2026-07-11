@@ -1,0 +1,1 @@
+LOS_METRIC = "last_contact_age_min"

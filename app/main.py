@@ -1,8 +1,7 @@
 import os
-import json
 import logging
+from contextlib import asynccontextmanager
 from typing import Optional
-from datetime import datetime, timezone
 
 from redis import Redis, RedisError
 from fastapi import FastAPI, Request, HTTPException, Depends, Query
@@ -26,45 +25,28 @@ from app.schemas import (
     TelemetryRead,
     TelemetryParams
 )
+from app.constants import LOS_METRIC
 from app.database import get_db, get_redis, reset_redis_client
+from app.logging_config import configure_logging
 from app.models import AlertRule, Alert, TelemetryReading
 from app.services import (
     check_for_alerts,
     resolve_alerts,
+    resolve_open_alerts_for_rule,
     get_paginated_telemetry,
     get_paginated_alerts
 )
 
-class Formatter(logging.Formatter):
-    def format(self, record: logging.LogRecord) -> str:
-        formatted_record = {
-            "level": record.levelname,
-            "msg": record.getMessage(),
-            "logger": record.name,
-            "timestamp": datetime.now(timezone.utc).isoformat()
-        }
-        if record.exc_info is not None:
-            formatted_record["exc"] = self.formatException(record.exc_info)
-        return json.dumps(formatted_record)
-
-
-def configure_logging() -> None:
-    handler = logging.StreamHandler()
-    handler.setFormatter(Formatter())
-
-    root = logging.getLogger()
-    root.setLevel(os.getenv("LOG_LEVEL", "INFO").upper())
-    root.handlers = [handler]
-
+@asynccontextmanager
+async def _lifespan(_: FastAPI):
+    configure_logging()
     for name in ("uvicorn", "uvicorn.access", "uvicorn.error"):
         uv = logging.getLogger(name)
         uv.handlers = []
         uv.propagate = True
+    yield
 
-
-app = FastAPI()
-configure_logging()
-
+app = FastAPI(lifespan=_lifespan)
 logger = logging.getLogger(__name__)
 
 @app.exception_handler(Exception)
@@ -93,7 +75,12 @@ async def pydantic_validation_exception_handler(request: Request, exc: PydanticV
     )
 
 def _parse_allowed_origins(value: str) -> list[str]:
-    return [origin.strip() for origin in value.split(",")] if value != "*" else ["*"]
+    if value.strip() == "*":
+        return ["*"]
+    origins = [origin.strip() for origin in value.split(",") if origin.strip()]
+    if not origins:
+        raise RuntimeError("ALLOWED_ORIGINS is set but contains no origins")
+    return origins
 
 ALLOWED_ORIGINS = _parse_allowed_origins(os.getenv("ALLOWED_ORIGINS", "*"))
 
@@ -130,16 +117,35 @@ def root(db: Session = Depends(get_db)):
 
 @app.post("/telemetry", response_model=TelemetryRead, status_code=201)
 def process_readings(t: TelemetryCreate, db: Session = Depends(get_db)):
+    if t.metric == LOS_METRIC:
+        raise HTTPException(
+            status_code=422,
+            detail=f"{LOS_METRIC} is derived by the LOS worker and cannot be ingested directly"
+        )
+
     reading = TelemetryReading(**t.model_dump())
     db.add(reading)
-    db.flush()
-
-    alerts = check_for_alerts(reading, db)
-    db.add_all(alerts)
-
-    resolve_alerts(reading, db)
-
     db.commit()
+
+    # The reading is committed before evaluation: neither a dedup conflict with
+    # a concurrent request nor a broken alert engine may roll back ingested
+    # telemetry, so evaluation failures return 201 rather than 500.
+    for _ in range(2):
+        try:
+            db.add_all(check_for_alerts(reading, db))
+            resolve_alerts(reading, db)
+            db.commit()
+            break
+        except IntegrityError:
+            # The open alert already exists; the retry re-reads and skips it.
+            db.rollback()
+        except Exception:
+            db.rollback()
+            logger.exception(f"Alert evaluation failed for reading {reading.id}; reading is committed, evaluation skipped")
+            break
+    else:
+        logger.warning(f"Alert evaluation conflicted twice for reading {reading.id}; evaluation skipped")
+
     db.refresh(reading)
     return reading
 
@@ -148,6 +154,8 @@ def process_readings(t: TelemetryCreate, db: Session = Depends(get_db)):
 def get_readings(db: Session = Depends(get_db), params: TelemetryParams = Depends(), r: Redis = Depends(get_redis)):
     key = _telemetry_cache_key(params)
 
+    redis_ok = True
+
     try:
         cached = r.get(key)
         if cached is not None:
@@ -155,6 +163,7 @@ def get_readings(db: Session = Depends(get_db), params: TelemetryParams = Depend
     except RedisError as e:
         reset_redis_client()
         logger.warning(f"Redis get failed: {e}")
+        redis_ok = False
 
     raw = get_paginated_telemetry(db, params)
     result = PaginatedResponse[TelemetryRead](
@@ -164,11 +173,11 @@ def get_readings(db: Session = Depends(get_db), params: TelemetryParams = Depend
         offset=raw.offset,
     )
 
-    try:
-        r.set(key, result.model_dump_json(), ex=CACHE_TTL)
-    except RedisError as e:
-        reset_redis_client()
-        logger.warning(f"Redis set failed: {e}")
+    if redis_ok:
+        try:
+            r.set(key, result.model_dump_json(), ex=CACHE_TTL)
+        except RedisError as e:
+            logger.warning(f"Redis set failed: {e}")
 
     return result
 
@@ -200,7 +209,7 @@ def acknowledge_alert(a_id: int, a: AlertUpdate, db: Session = Depends(get_db)):
     return alert
     
 
-@app.post("/alert-rules", response_model=AlertRuleRead)
+@app.post("/alert-rules", response_model=AlertRuleRead, status_code=201)
 def create_alert_rule(r: AlertRuleCreate, db: Session = Depends(get_db)):
     rule = AlertRule(**r.model_dump())
     db.add(rule)
@@ -236,8 +245,21 @@ def update_alert_rule(rule_id: int, r: AlertRuleUpdate, db: Session = Depends(ge
         )
     
     new_rule = r.model_dump(exclude_unset=True)
+
+    # Open alerts were raised under the rule's previous meaning, so changing
+    # what the rule evaluates resolves them rather than leaving them stranded.
+    semantics_changed = any(
+        field in new_rule and getattr(rule, field) != new_rule[field]
+        for field in ("metric", "operator", "threshold_value")
+    )
+
     for key, value in new_rule.items():
         setattr(rule, key, value)
+
+    if semantics_changed:
+        resolved_count = resolve_open_alerts_for_rule(rule.id, db)
+        if resolved_count:
+            logger.info(f"Rule {rule.id} semantics changed; resolved {resolved_count} open alert(s)")
 
     try:
         db.commit()

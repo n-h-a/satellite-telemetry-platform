@@ -7,6 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app import models
+from app.constants import LOS_METRIC
 from app.database import get_db, get_redis
 from app.main import app as fastapi_app, _telemetry_cache_key, CACHE_TTL
 from app.schemas import PaginatedResponse, TelemetryParams, TelemetryRead
@@ -38,6 +39,37 @@ def test_post_telemetry_rejects_empty_string_fields(client):
     }
     resp = client.post("/telemetry", json=payload)
     assert resp.status_code == 422
+
+
+def test_post_telemetry_rejects_derived_los_metric(client, db: Session):
+    payload = {
+        "source_id": "SAT-1",
+        "metric": LOS_METRIC,
+        "value": 10.0,
+        "unit": "min",
+    }
+    resp = client.post("/telemetry", json=payload)
+
+    assert resp.status_code == 422
+    assert db.scalars(select(models.TelemetryReading)).all() == []
+
+
+def test_post_telemetry_returns_201_when_alert_evaluation_fails(client, db: Session, monkeypatch):
+    def broken_evaluation(reading, session):
+        raise RuntimeError("alert engine exploded")
+
+    monkeypatch.setattr("app.main.check_for_alerts", broken_evaluation)
+
+    resp = client.post("/telemetry", json={
+        "source_id": "SAT-1",
+        "metric": "battery_soc_percent",
+        "value": 15.0,
+        "unit": "%",
+    })
+
+    assert resp.status_code == 201
+    readings = db.scalars(select(models.TelemetryReading)).all()
+    assert len(readings) == 1
 
 
 def test_post_telemetry_fires_end_to_end_when_rule_breached(client, db: Session):
@@ -103,12 +135,28 @@ def test_get_telemetry_recent_respects_source_id_and_metric_filters(client, db: 
     assert resp.json()["items"][0]["metric"] == "battery_voltage_v"
 
 
-def test_get_telemetry_recent_returns_422_for_invalid_time_range(client):
+def test_get_telemetry_recent_allows_equal_time_bounds(client):
     resp = client.get("/telemetry/recent", params={"from_time": "2024-01-01T00:00:00Z", "to_time": "2024-01-01T00:00:00Z"})
     assert resp.status_code == 200
 
+
+def test_get_telemetry_recent_returns_422_when_from_time_after_to_time(client):
     resp = client.get("/telemetry/recent", params={"from_time": "2024-01-02T00:00:00Z", "to_time": "2024-01-01T00:00:00Z"})
     assert resp.status_code == 422
+
+
+def test_get_telemetry_recent_total_correct_when_offset_past_end(client, db: Session):
+    db.add_all([
+        models.TelemetryReading(source_id="SAT-1", metric="battery_soc_percent", value=15.0, unit="%"),
+        models.TelemetryReading(source_id="SAT-1", metric="battery_soc_percent", value=16.0, unit="%"),
+        models.TelemetryReading(source_id="SAT-1", metric="battery_soc_percent", value=17.0, unit="%"),
+    ])
+    db.flush()
+
+    resp = client.get("/telemetry/recent", params={"offset": 100})
+    assert resp.status_code == 200
+    assert resp.json()["items"] == []
+    assert resp.json()["total"] == 3
 
 
 def test_get_alerts_respects_severity_and_acknowledged_filters(client, db: Session):
@@ -184,7 +232,9 @@ def test_post_alert_rule_returns_409_on_duplicate_name(client):
         "severity": "CRITICAL",
         "subsystem": "Electrical Power System",
     }
-    client.post("/alert-rules", json=payload)
+    first = client.post("/alert-rules", json=payload)
+    assert first.status_code == 201
+
     resp = client.post("/alert-rules", json=payload)
     assert resp.status_code == 409
 
@@ -307,6 +357,147 @@ def test_allowed_origins_parsing_strips_whitespace():
         "https://app.example.com",
         "https://admin.example.com",
     ]
+
+
+def test_allowed_origins_parsing_drops_empty_entries():
+    from app.main import _parse_allowed_origins
+
+    assert _parse_allowed_origins("https://app.example.com,") == ["https://app.example.com"]
+    assert _parse_allowed_origins("https://app.example.com,,https://admin.example.com") == [
+        "https://app.example.com",
+        "https://admin.example.com",
+    ]
+
+
+def test_allowed_origins_parsing_raises_when_no_origins_remain():
+    from app.main import _parse_allowed_origins
+
+    for value in ["", " ", ",", ", ,"]:
+        with pytest.raises(RuntimeError):
+            _parse_allowed_origins(value)
+
+
+def test_post_telemetry_survives_alert_dedup_conflict(client, db: Session, monkeypatch):
+    rule = models.AlertRule(
+        name="Low battery critical",
+        metric="battery_soc_percent",
+        operator="<",
+        threshold_value=20.0,
+        severity="CRITICAL",
+        subsystem="Electrical Power System",
+    )
+    existing_reading = models.TelemetryReading(
+        source_id="SAT-1", metric="battery_soc_percent", value=15.0, unit="%",
+    )
+    db.add_all([rule, existing_reading])
+    db.flush()
+
+    db.add(models.Alert(
+        rule_id=rule.id, reading_id=existing_reading.id, source_id="SAT-1",
+        metric="battery_soc_percent", observed_value=15.0,
+        message="already open", severity="CRITICAL",
+    ))
+    db.flush()
+
+    # Simulate the race: alert evaluation doesn't see the open alert and
+    # returns a duplicate, so both commit attempts hit the unique index.
+    def duplicate_check(reading, session):
+        return [models.Alert(
+            rule_id=rule.id, reading_id=reading.id, source_id=reading.source_id,
+            metric=reading.metric, observed_value=reading.value,
+            message="duplicate", severity="CRITICAL",
+        )]
+
+    monkeypatch.setattr("app.main.check_for_alerts", duplicate_check)
+
+    resp = client.post("/telemetry", json={
+        "source_id": "SAT-1",
+        "metric": "battery_soc_percent",
+        "value": 14.0,
+        "unit": "%",
+    })
+
+    assert resp.status_code == 201
+
+    readings = db.scalars(select(models.TelemetryReading)).all()
+    assert len(readings) == 2
+
+    open_alerts = db.scalars(select(models.Alert).where(models.Alert.resolved_at.is_(None))).all()
+    assert len(open_alerts) == 1
+
+
+def test_get_alerts_total_correct_when_offset_past_end(client, db: Session):
+    rule = models.AlertRule(
+        name="Low battery critical",
+        metric="battery_soc_percent",
+        operator="<",
+        threshold_value=20.0,
+        severity="CRITICAL",
+        subsystem="Electrical Power System",
+    )
+    reading = models.TelemetryReading(
+        source_id="SAT-1", metric="battery_soc_percent", value=15.0, unit="%",
+    )
+    db.add_all([rule, reading])
+    db.flush()
+
+    db.add(models.Alert(
+        rule_id=rule.id, reading_id=reading.id, source_id="SAT-1",
+        metric="battery_soc_percent", observed_value=15.0,
+        message="test", severity="CRITICAL",
+    ))
+    db.flush()
+
+    resp = client.get("/alerts", params={"offset": 100})
+    assert resp.status_code == 200
+    assert resp.json()["items"] == []
+    assert resp.json()["total"] == 1
+
+
+def _rule_with_open_alert(db: Session):
+    rule = models.AlertRule(
+        name="Low battery critical",
+        metric="battery_soc_percent",
+        operator="<",
+        threshold_value=20.0,
+        severity="CRITICAL",
+        subsystem="Electrical Power System",
+    )
+    reading = models.TelemetryReading(
+        source_id="SAT-1", metric="battery_soc_percent", value=15.0, unit="%",
+    )
+    db.add_all([rule, reading])
+    db.flush()
+
+    alert = models.Alert(
+        rule_id=rule.id, reading_id=reading.id, source_id="SAT-1",
+        metric="battery_soc_percent", observed_value=15.0,
+        message="test", severity="CRITICAL",
+    )
+    db.add(alert)
+    db.flush()
+    return rule, alert
+
+
+def test_patch_alert_rule_semantic_change_resolves_open_alerts(client, db: Session):
+    rule, alert = _rule_with_open_alert(db)
+
+    resp = client.patch(f"/alert-rules/{rule.id}", json={"threshold_value": 10.0})
+    assert resp.status_code == 200
+
+    db.refresh(alert)
+    assert alert.resolved_at is not None
+
+
+def test_patch_alert_rule_cosmetic_change_keeps_open_alerts(client, db: Session):
+    rule, alert = _rule_with_open_alert(db)
+
+    # Renaming and re-sending the same threshold are not semantic changes.
+    resp = client.patch(f"/alert-rules/{rule.id}", json={"name": "Renamed rule", "threshold_value": 20.0})
+    assert resp.status_code == 200
+
+    db.refresh(alert)
+    assert alert.resolved_at is None
 
 
 

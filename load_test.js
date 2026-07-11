@@ -21,7 +21,7 @@ export default function () {
     });
 
     const res = http.post('http://localhost:8000/telemetry', payload, {
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'Connection': 'close' },
     });
 
     check(res, { 'status is 201': (r) => r.status === 201 });

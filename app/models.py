@@ -23,7 +23,7 @@ class AlertRule(Base):
     __table_args__ = (
         CheckConstraint("operator IN ('<', '>', '<=', '>=', '==', '!=')", name="ck_alert_rules_operator"),
         CheckConstraint("severity IN ('INFO', 'WARNING', 'CRITICAL')",    name="ck_alert_rules_severity"),
-        Index("ix_metric", metric, postgresql_where=enabled.is_(True)), 
+        Index("ix_alert_rules_metric", metric, postgresql_where=enabled.is_(True)),
     )
 
 class Alert(Base):
@@ -43,7 +43,15 @@ class Alert(Base):
 
     __table_args__ = (
         CheckConstraint("severity IN ('INFO', 'WARNING', 'CRITICAL')", name="ck_alerts_severity"),
-        Index("ix_triggered_at_desc", triggered_at.desc()), 
+        Index("ix_triggered_at_desc", triggered_at.desc()),
+        Index(
+            "ix_alerts_open_dedup",
+            source_id,
+            rule_id,
+            unique=True,
+            postgresql_where=resolved_at.is_(None),
+            sqlite_where=resolved_at.is_(None),
+        ),
     )
 
 class TelemetryReading(Base):
@@ -57,7 +65,11 @@ class TelemetryReading(Base):
     timestamp: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     received_at: Mapped[datetime]= mapped_column(DateTime(timezone=True), server_default=text("now()"))
 
-    __table_args__ = (Index("ix_timestamp_desc", timestamp.desc()), )
+    __table_args__ = (
+        Index("ix_readings_source_metric", source_id, metric),
+        Index("ix_readings_received_at", received_at.desc()),
+        Index("ix_readings_source_received_at", source_id, received_at.desc()),
+    )
 
     def __repr__(self) -> str:
         return f"<TelemetryReading id={self.id} source={self.source_id!r} metric={self.metric!r} value={self.value}>"

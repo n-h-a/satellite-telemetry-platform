@@ -4,9 +4,10 @@ import logging
 from datetime import datetime, timezone
 from decimal import Decimal
 
-from sqlalchemy import select, case, func
-from sqlalchemy.orm import Session, aliased
+from sqlalchemy import select, case, func, update
+from sqlalchemy.orm import Session
 
+from app.constants import LOS_METRIC
 from app.models import Alert, AlertRule, TelemetryReading
 from app.schemas import (
     PaginatedResponse,
@@ -48,25 +49,28 @@ def check_for_alerts(reading: TelemetryReading, db: Session) -> list[Alert]:
         .where(AlertRule.enabled)
     )
 
-    open_alerts_map = {
-        a.rule_id: a
-        for a in db.scalars(
-            select(Alert).where(
-                Alert.source_id == reading.source_id,
-                Alert.metric == reading.metric,
-                Alert.resolved_at.is_(None)
-            )
-        ).all()
-    }
+    rules = db.scalars(matching_rules).all()
+    open_alerts_map = None
 
     alerts = []
-    for rule in db.scalars(matching_rules).all():
+    for rule in rules:
         comp_func = OPERATORS.get(rule.operator)
         if comp_func is None:
             logger.warning(f"Rule {rule.id} has invalid operator {rule.operator}")
             continue
 
         if comp_func(reading.value, rule.threshold_value):
+            if open_alerts_map is None:
+                open_alerts_map = {
+                    a.rule_id: a
+                    for a in db.scalars(
+                        select(Alert).where(
+                            Alert.source_id == reading.source_id,
+                            Alert.rule_id.in_([r.id for r in rules]),
+                            Alert.resolved_at.is_(None)
+                        )
+                    ).all()
+                }
             existing_alert = open_alerts_map.get(rule.id)
             if existing_alert is not None:
                 continue
@@ -74,8 +78,18 @@ def check_for_alerts(reading: TelemetryReading, db: Session) -> list[Alert]:
             msg = f"{reading.metric} is {reading.value}, threshold: {rule.operator} {rule.threshold_value}"
             alerts.append(create_alert(rule.id, msg, rule.severity))
             logger.info(f"Alert fired: rule_id={rule.id} source={reading.source_id} metric={reading.metric} value={reading.value} severity={rule.severity}")
-        
+
     return alerts
+
+
+def _total_from_rows(rows: list, offset: int, db: Session, model, filters: list) -> int:
+    if rows:
+        return rows[0].total
+    # An empty page with a nonzero offset may just mean the offset overshot
+    # the result set; the window count can't tell, so count explicitly.
+    if offset:
+        return db.scalar(select(func.count()).select_from(model).where(*filters)) or 0
+    return 0
 
 
 def get_paginated_telemetry(db: Session, params: TelemetryParams) -> PaginatedResponse[TelemetryRead]:
@@ -84,21 +98,23 @@ def get_paginated_telemetry(db: Session, params: TelemetryParams) -> PaginatedRe
         filters.append(TelemetryReading.source_id == params.source_id)
     if params.metric is not None:
         filters.append(TelemetryReading.metric == params.metric)
+
+    effective_ts = func.coalesce(TelemetryReading.timestamp, TelemetryReading.received_at)
     if params.from_time is not None:
-        filters.append(TelemetryReading.timestamp >= params.from_time)
+        filters.append(effective_ts >= params.from_time)
     if params.to_time is not None:
-        filters.append(TelemetryReading.timestamp <= params.to_time)
+        filters.append(effective_ts <= params.to_time)
 
     stmt = (
         select(TelemetryReading, func.count().over().label("total"))
         .where(*filters)
-        .order_by(TelemetryReading.timestamp.desc().nulls_last())
+        .order_by(effective_ts.desc())
         .offset(params.offset)
         .limit(params.limit)
     )
 
     rows = db.execute(stmt).all()
-    total = rows[0].total if rows else 0
+    total = _total_from_rows(rows, params.offset, db, TelemetryReading, filters)
     items = [row[0] for row in rows]
 
     return PaginatedResponse(
@@ -117,7 +133,7 @@ def get_paginated_alerts(db: Session, params: AlertParams) -> PaginatedResponse[
         filters.append(Alert.severity==params.severity)
     if params.acknowledged is not None:
         filters.append(Alert.acknowledged==params.acknowledged)
-    
+
     stmt = (
         select(Alert, func.count().over().label("total"))
         .where(*filters)
@@ -126,7 +142,7 @@ def get_paginated_alerts(db: Session, params: AlertParams) -> PaginatedResponse[
                 (Alert.severity == "CRITICAL", 1),
                 (Alert.severity == "WARNING", 2),
                 (Alert.severity == "INFO", 3)
-            ), 
+            ),
             Alert.triggered_at.desc()
         )
         .offset(params.offset)
@@ -134,7 +150,7 @@ def get_paginated_alerts(db: Session, params: AlertParams) -> PaginatedResponse[
     )
 
     rows = db.execute(stmt).all()
-    total = rows[0].total if rows else 0
+    total = _total_from_rows(rows, params.offset, db, Alert, filters)
     items = [row[0] for row in rows]
 
     return PaginatedResponse(
@@ -145,27 +161,39 @@ def get_paginated_alerts(db: Session, params: AlertParams) -> PaginatedResponse[
     )
 
 
-def run_los_check(db: Session) -> None:
+def run_los_check(db: Session) -> list[Alert]:
     los_rules = db.scalars(
         select(AlertRule)
-        .where(AlertRule.metric == "last_contact_age_min")
+        .where(AlertRule.metric == LOS_METRIC)
         .where(AlertRule.enabled)
     ).all()
 
     if not los_rules:
-        return
+        return []
 
-    rn = func.row_number().over(
-        partition_by=TelemetryReading.source_id,
-        order_by=TelemetryReading.received_at.desc()
-    ).label("rn")
+    latest_per_source = (
+        select(
+            TelemetryReading.source_id,
+            func.max(TelemetryReading.received_at).label("received_at"),
+        )
+        .group_by(TelemetryReading.source_id)
+        .subquery()
+    )
 
-    subq = select(TelemetryReading, rn).subquery()
-    aliased_reading = aliased(TelemetryReading, subq)
+    # Ties on received_at break toward the highest id.
+    latest_ids = (
+        select(func.max(TelemetryReading.id))
+        .join(
+            latest_per_source,
+            (TelemetryReading.source_id == latest_per_source.c.source_id)
+            & (TelemetryReading.received_at == latest_per_source.c.received_at),
+        )
+        .group_by(TelemetryReading.source_id)
+    )
 
     latest_readings = {
         r.source_id: r
-        for r in db.scalars(select(aliased_reading).where(subq.c.rn == 1)).all()
+        for r in db.scalars(select(TelemetryReading).where(TelemetryReading.id.in_(latest_ids))).all()
     }
 
     source_ids = latest_readings.keys()
@@ -174,6 +202,7 @@ def run_los_check(db: Session) -> None:
         (a.source_id, a.rule_id): a
         for a in db.scalars(
             select(Alert).where(
+                Alert.source_id.in_(list(source_ids)),
                 Alert.rule_id.in_([r.id for r in los_rules]),
                 Alert.resolved_at.is_(None)
             )
@@ -181,6 +210,7 @@ def run_los_check(db: Session) -> None:
     }
 
     now = datetime.now(timezone.utc)
+    alerts = []
 
     for source_id in source_ids:
         last_reading = latest_readings[source_id]
@@ -201,12 +231,12 @@ def run_los_check(db: Session) -> None:
 
             if comp_func(age_min, float(rule.threshold_value)):
                 if existing_alert is None:
-                    msg = f"last_contact_age_min is {age_min:.1f}, threshold: {rule.operator} {rule.threshold_value}"
-                    db.add(Alert(
+                    msg = f"{LOS_METRIC} is {age_min:.1f}, threshold: {rule.operator} {rule.threshold_value}"
+                    alerts.append(Alert(
                         rule_id=rule.id,
                         reading_id=last_reading.id,
                         source_id=source_id,
-                        metric="last_contact_age_min",
+                        metric=LOS_METRIC,
                         observed_value=Decimal(str(round(age_min, 4))),
                         message=msg,
                         severity=rule.severity,
@@ -216,6 +246,17 @@ def run_los_check(db: Session) -> None:
                 if existing_alert is not None:
                     existing_alert.resolved_at = now
                     logger.info(f"LOS alert resolved: alert_id={existing_alert.id} source={source_id}")
+
+    return alerts
+
+
+def resolve_open_alerts_for_rule(rule_id: int, db: Session) -> int:
+    result = db.execute(
+        update(Alert)
+        .where(Alert.rule_id == rule_id, Alert.resolved_at.is_(None))
+        .values(resolved_at=datetime.now(timezone.utc))
+    )
+    return result.rowcount
 
 
 def resolve_alerts(reading: TelemetryReading, db: Session) -> None:

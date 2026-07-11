@@ -10,7 +10,7 @@ A mission-control-style backend simulating a ground station that receives state-
 - Simulates 5 satellites streaming state-of-health telemetry
 - Evaluates 28 configurable alert rules across EPS, Thermal, C&DH, Communications, and ADCS
 - Supports alert acknowledgement, duplicate suppression, auto-resolution, and loss-of-signal detection
-- Includes Redis caching, database indexes, migration support, and 27 pytest tests across routes/services/workers
+- Includes Redis caching, database indexes, migration support, and 42 pytest tests across routes/services/workers
 
 ---
 
@@ -96,7 +96,7 @@ Stores every raw sensor reading ingested via `POST /telemetry`.
 | timestamp | timestamptz | satellite-reported time (nullable) |
 | received_at | timestamptz | server arrival time, default `now()` |
 
-Index: `ix_timestamp_desc` — descending index on `timestamp` for fast recency queries.
+Indexes: `ix_readings_effective_ts` — functional index on `COALESCE(timestamp, received_at)`, serving the recency sort and time-range filters; `ix_readings_source_metric` — for filtered queries; `ix_readings_received_at` and `ix_readings_source_received_at` — for the LOS worker's latest-reading-per-source lookup.
 
 ### `alert_rules`
 
@@ -114,7 +114,7 @@ Configurable rules evaluated on every ingested reading.
 | subsystem | varchar(100) | e.g. `Electrical Power System` |
 | enabled | boolean | rules can be disabled without deletion |
 
-Index: `ix_metric` — partial index on `metric WHERE enabled = TRUE`, used by the alert engine on every telemetry ingest.
+Index: `ix_alert_rules_metric` — partial index on `metric WHERE enabled = TRUE`, used by the alert engine on every telemetry ingest.
 
 ### `alerts`
 
@@ -134,17 +134,19 @@ One row per alert event. Supports open/resolved lifecycle.
 | triggered_at | timestamptz | default `now()` |
 | resolved_at | timestamptz | null while alert is open |
 
-Index: `ix_triggered_at_desc` — descending index on `triggered_at`.
+Indexes: `ix_alerts_open_dedup` — unique partial index on `(source_id, rule_id) WHERE resolved_at IS NULL`; it both serves the open-alert lookups and enforces at the database level that a rule can hold at most one open alert per satellite, even under concurrent ingest. `ix_triggered_at_desc` — descending index on `triggered_at` for the alert feed sort.
 
 ---
 
 ## Alert Engine
 
-Alert evaluation runs synchronously inside the same database transaction as every `POST /telemetry` call.
+Alert evaluation runs synchronously on every `POST /telemetry` call, in a separate transaction from the reading insert: the reading is committed first, so an alert-evaluation failure or a duplicate-alert conflict with a concurrent request can never roll back ingested telemetry. If the unique open-alert index rejects a duplicate, the evaluation retries once — the retry sees the winning request's alert and skips it. Any other evaluation failure is logged and the ingest still returns `201`; readings are never lost to a broken alert engine.
 
 **`check_for_alerts(reading, db)`** — fetches all enabled rules whose `metric` matches the incoming reading. For each matching rule it evaluates `reading.value {operator} rule.threshold_value` using Python's `operator` module. If the condition is breached, it checks whether an open alert (i.e. `resolved_at IS NULL`) already exists for that `rule_id` + `source_id` pair before creating a new one. This deduplication means a satellite can hold at threshold for hours without generating duplicate alerts.
 
 **`resolve_alerts(reading, db)`** — called in the same transaction, after alert creation. For every open alert on the same `source_id` and `metric`, it re-evaluates the rule condition against the new value. If the condition is no longer breached, it stamps `resolved_at = now()`, closing the alert automatically.
+
+Editing a rule's `metric`, `operator`, or `threshold_value` resolves its open alerts: they were raised under the rule's previous meaning and would otherwise be stranded (an alert whose stored metric no longer matches the rule can never auto-resolve). Renaming, re-enabling, or changing severity leaves open alerts untouched.
 
 The `duration_seconds` column is populated by the seed data (CPU rules carry 300s and 600s windows) but the engine currently fires on any single reading above threshold. Duration-based evaluation is tracked in the [backlog](#future-improvements).
 
@@ -175,7 +177,7 @@ The seed data includes two LOS rules (seeded alongside the other 26 rules via `p
 | Command and Data Handling | `obc_temp_c`, `obc_cpu_percent`, `storage_used_percent` |
 | Communications | `rssi_dbm`, `link_margin_db` |
 | ADCS | `attitude_error_deg` |
-| Communications (derived) | `last_contact_age_min` — computed by the worker, not ingested directly |
+| Communications (derived) | `last_contact_age_min` — computed by the worker; `POST /telemetry` rejects it with `422` |
 
 ---
 
@@ -184,14 +186,14 @@ The seed data includes two LOS rules (seeded alongside the other 26 rules via `p
 | Method | Endpoint | Description |
 |---|---|---|
 | `GET` | `/` | Health check — pings PostgreSQL, returns `503` if unavailable |
-| `POST` | `/telemetry` | Ingest a reading; fires and resolves alerts in the same transaction |
+| `POST` | `/telemetry` | Ingest a reading (committed before alert evaluation), then fire and resolve alerts |
 | `GET` | `/telemetry/recent` | Paginated readings; filterable by `source_id`, `metric`, `from_time`, `to_time`; cached 30s in Redis |
 | `GET` | `/sources` | List distinct source IDs seen in `telemetry_readings` |
 | `GET` | `/alerts` | Paginated alerts sorted `CRITICAL→WARNING→INFO` then newest first; filterable by `source_id`, `severity`, `acknowledged` |
 | `PATCH` | `/alerts/{id}` | Acknowledge or unacknowledge an alert |
 | `POST` | `/alert-rules` | Create an alert rule (`409` on duplicate name) |
 | `GET` | `/alert-rules` | List rules; optional `?enabled=true/false` filter |
-| `PATCH` | `/alert-rules/{id}` | Partial update any mutable field |
+| `PATCH` | `/alert-rules/{id}` | Partial update any mutable field; changing `metric`/`operator`/`threshold_value` resolves the rule's open alerts |
 | `DELETE` | `/alert-rules/{id}` | Delete a rule (`409` if alerts reference it) |
 
 Query parameters for `GET /telemetry/recent`:

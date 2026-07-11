@@ -50,7 +50,14 @@ def redis_client():
 
 @pytest.fixture
 def client(db: Session, redis_client):
-    fastapi_app.dependency_overrides[get_db] = lambda: db
+    def override_get_db():
+        try:
+            yield db
+        except Exception:
+            db.rollback()
+            raise
+
+    fastapi_app.dependency_overrides[get_db] = override_get_db
     fastapi_app.dependency_overrides[get_redis] = lambda: redis_client
     client = TestClient(fastapi_app)
 

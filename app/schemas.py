@@ -1,11 +1,18 @@
-from typing import Optional, Literal, Generic, TypeVar
+from typing import Optional, Literal, Generic, TypeVar, Annotated
 from decimal import Decimal
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator, AfterValidator
 
 
 T = TypeVar('T')
+
+def _require_timezone_aware(v: datetime):
+    if v.tzinfo is None:
+        raise ValueError("datetime must be timezone-aware (e.g. 2024-01-01T00:00:00Z)")
+    return v
+
+UTCDatetime = Annotated[datetime, AfterValidator(_require_timezone_aware)]
 
 class PaginatedResponse(BaseModel, Generic[T]):
     items: list[T]
@@ -20,7 +27,7 @@ class AlertRuleCreate(BaseModel):
     metric: str = Field(min_length=1)
     operator: Literal["<", ">", "<=", ">=", "==", "!="]
     threshold_value: Decimal
-    duration_seconds: Optional[int] = None
+    duration_seconds: Optional[int] = Field(default=None, description="Duration stored but not evaluated")
     severity: Literal["INFO", "WARNING", "CRITICAL"]
     subsystem: str = Field(min_length=1)
     enabled: bool = True
@@ -31,7 +38,7 @@ class AlertRuleRead(BaseModel):
     metric: str
     operator: Literal["<", ">", "<=", ">=", "==", "!="]
     threshold_value: Decimal
-    duration_seconds: Optional[int] = None
+    duration_seconds: Optional[int] = Field(default=None, description="Duration stored but not evaluated")
     severity: Literal["INFO", "WARNING", "CRITICAL"]
     subsystem: str
     enabled: bool
@@ -43,7 +50,7 @@ class AlertRuleUpdate(BaseModel):
     metric: Optional[str] = Field(min_length=1, default=None)
     operator: Optional[Literal["<", ">", "<=", ">=", "==", "!="]] = None
     threshold_value: Optional[Decimal] = None
-    duration_seconds: Optional[int] = None
+    duration_seconds: Optional[int] = Field(default=None, description="Duration stored but not evaluated")
     severity: Optional[Literal["INFO", "WARNING", "CRITICAL"]] = None
     subsystem: Optional[str] = Field(min_length=1, default=None)
     enabled: Optional[bool] = None
@@ -78,7 +85,7 @@ class TelemetryCreate(BaseModel):
     metric: str = Field(min_length=1)
     value: Decimal
     unit: str = Field(min_length=1)
-    timestamp: Optional[datetime] = None
+    timestamp: Optional[UTCDatetime] = None
 
 class TelemetryRead(BaseModel):
     id: int
@@ -96,12 +103,12 @@ class TelemetryParams(BaseModel):
     offset: int = Field(default=0, ge=0)
     source_id: Optional[str] = Field(default=None, description="Satellite source ID, e.g. SAT-1")
     metric: Optional[str] = Field(default=None, description="Metric name, e.g. battery_voltage_v")
-    from_time: Optional[datetime] = Field(default=None, description="Return readings at or after this timestamp (UTC)")
-    to_time: Optional[datetime] = Field(default=None, description="Return readings at or before this timestamp (UTC)")
+    from_time: Optional[UTCDatetime] = Field(default=None, description="Return readings at or after this timestamp (UTC)")
+    to_time: Optional[UTCDatetime] = Field(default=None, description="Return readings at or before this timestamp (UTC)")
 
     @model_validator(mode="after")
     def validate_time_range(self) -> "TelemetryParams":
         if self.from_time is not None and self.to_time is not None:
             if self.from_time > self.to_time:
-                raise ValueError("from_time must be before to_time")
+                raise ValueError("from_time must not be after to_time")
         return self

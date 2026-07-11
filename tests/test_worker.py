@@ -4,12 +4,13 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app import models, services
+from app.constants import LOS_METRIC
 
 
 def _los_rule(name="Missed contact warning", threshold=120.0, severity="WARNING"):
     return models.AlertRule(
         name=name,
-        metric="last_contact_age_min",
+        metric=LOS_METRIC,
         operator=">",
         threshold_value=threshold,
         severity=severity,
@@ -33,13 +34,13 @@ def test_los_fires_when_age_exceeds_threshold(db: Session):
     db.add_all([rule, reading])
     db.flush()
 
-    services.run_los_check(db)
+    db.add_all(services.run_los_check(db))
     db.flush()
 
     alert = db.scalar(select(models.Alert).where(models.Alert.source_id == "SAT-1"))
     assert alert is not None
     assert alert.severity == "WARNING"
-    assert alert.metric == "last_contact_age_min"
+    assert alert.metric == LOS_METRIC
     assert alert.reading_id == reading.id
 
 
@@ -49,7 +50,7 @@ def test_los_does_not_fire_when_contact_is_recent(db: Session):
     db.add_all([rule, reading])
     db.flush()
 
-    services.run_los_check(db)
+    db.add_all(services.run_los_check(db))
     db.flush()
 
     alert = db.scalar(select(models.Alert).where(models.Alert.source_id == "SAT-1"))
@@ -62,9 +63,9 @@ def test_los_suppresses_duplicate_alert(db: Session):
     db.add_all([rule, reading])
     db.flush()
 
-    services.run_los_check(db)
+    db.add_all(services.run_los_check(db))
     db.flush()
-    services.run_los_check(db)
+    db.add_all(services.run_los_check(db))
     db.flush()
 
     alerts = db.scalars(select(models.Alert).where(models.Alert.source_id == "SAT-1")).all()
@@ -77,7 +78,7 @@ def test_los_resolves_when_contact_resumes(db: Session):
     db.add_all([rule, old_reading])
     db.flush()
 
-    services.run_los_check(db)
+    db.add_all(services.run_los_check(db))
     db.flush()
 
     alert = db.scalar(select(models.Alert).where(models.Alert.source_id == "SAT-1"))
@@ -88,7 +89,7 @@ def test_los_resolves_when_contact_resumes(db: Session):
     db.add(new_reading)
     db.flush()
 
-    services.run_los_check(db)
+    db.add_all(services.run_los_check(db))
     db.flush()
 
     db.refresh(alert)
@@ -102,7 +103,7 @@ def test_los_fires_warning_and_critical_independently(db: Session):
     db.add_all([rule_warning, rule_critical, reading])
     db.flush()
 
-    services.run_los_check(db)
+    db.add_all(services.run_los_check(db))
     db.flush()
 
     alerts = db.scalars(select(models.Alert).where(models.Alert.source_id == "SAT-1")).all()
@@ -115,7 +116,7 @@ def test_los_skips_when_no_los_rules_exist(db: Session):
     db.add(reading)
     db.flush()
 
-    services.run_los_check(db)
+    db.add_all(services.run_los_check(db))
     db.flush()
 
     alerts = db.scalars(select(models.Alert)).all()
@@ -127,7 +128,7 @@ def test_los_skips_when_no_sources_exist(db: Session):
     db.add(rule)
     db.flush()
 
-    services.run_los_check(db)
+    db.add_all(services.run_los_check(db))
     db.flush()
 
     alerts = db.scalars(select(models.Alert)).all()
@@ -141,7 +142,7 @@ def test_los_monitors_multiple_sources_independently(db: Session):
     db.add_all([rule, sat1_reading, sat2_reading])
     db.flush()
 
-    services.run_los_check(db)
+    db.add_all(services.run_los_check(db))
     db.flush()
 
     sat1_alert = db.scalar(select(models.Alert).where(models.Alert.source_id == "SAT-1"))

@@ -45,13 +45,27 @@ def get_redis():
 def reset_redis_client():
     global _redis_client
     with _redis_lock:
-        _redis_client = None
+        try:
+            if _redis_client is not None:
+                _redis_client.close()
+        finally:
+            _redis_client = None
 
 def _get_redis_client():
     global _redis_client
-    with _redis_lock:
-        if _redis_client is None:
-            if not REDIS_URL:
-                raise RuntimeError("REDIS_URL environment variable is not set")
-            _redis_client = redis.Redis.from_url(REDIS_URL)
-    return _redis_client
+    client = _redis_client
+    if client is None:
+        with _redis_lock:
+            client = _redis_client
+            if client is None:
+                if not REDIS_URL:
+                    raise RuntimeError("REDIS_URL environment variable is not set")
+                # Short socket timeouts: a hung Redis must not stall request
+                # threads, since every caller falls back to the database.
+                client = redis.Redis.from_url(
+                    REDIS_URL,
+                    socket_connect_timeout=0.5,
+                    socket_timeout=0.5,
+                )
+                _redis_client = client
+    return client

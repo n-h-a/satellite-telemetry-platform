@@ -47,5 +47,6 @@ COPY . .
 # Expose the port that the application listens on.
 EXPOSE 8000
 
-# Run the application.
-CMD uvicorn app.main:app --host 0.0.0.0 --port 8000
+# Run the application. Exec form so uvicorn receives SIGTERM directly and
+# containers stop promptly instead of waiting out the stop timeout.
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
